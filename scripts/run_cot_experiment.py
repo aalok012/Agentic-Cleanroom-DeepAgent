@@ -26,10 +26,14 @@ import sys
 import time
 from pathlib import Path
 
+from src.cleanroom.utils.llm_client import DEFAULT_MODEL  # noqa: E402
+
 ROOT = Path(__file__).resolve().parent.parent
 SRS_DIR = ROOT / "data" / "srs"
 BASE = ROOT / "outputs" / "cot"
-MODEL = "deepseek/deepseek-v3.2"
+# Model under test. Defaults to whatever .env configures (LLM_MODEL), so this driver
+# follows the served model instead of the retired OpenRouter slug it was written against.
+MODEL = os.getenv("EXPERIMENT_MODEL") or DEFAULT_MODEL
 FLAGS = ["--prove", "--certify", "--max-cert-loops", "4", "--prove-rounds", "4"]
 LANGS = [("python", "fastapi"), ("java", "spring"), ("javascript", "express")]
 CELL_TIMEOUT = int(os.getenv("COT_CELL_TIMEOUT", "3900"))   # seconds per cell (65 min)

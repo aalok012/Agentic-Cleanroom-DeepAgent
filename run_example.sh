@@ -7,27 +7,29 @@
 # specification and prints where the per-requirement audit labels landed.
 #
 # Usage:
-#   ./run_example.sh                       # default: Human.xml, python, DeepSeek
-#   MODEL=openai/gpt-5.1 ./run_example.sh  # pick a model (routed via OpenRouter)
+#   ./run_example.sh                       # default: Human.xml, python, Qwen2.5-Coder-32B
+#   MODEL=gpt-5.1 ./run_example.sh         # pick a model (id as your endpoint lists it)
 #   SRS="data/srs/dineout_srs.xml" LANG=java ./run_example.sh
 #
-# Requires: uv (https://docs.astral.sh/uv/) and an OpenRouter or OpenAI key.
+# Requires: uv (https://docs.astral.sh/uv/) and an OpenAI-compatible endpoint —
+# a self-hosted server via LLM_BASE_URL, or OPENAI_API_KEY for api.openai.com.
 # ─────────────────────────────────────────────────────────────────────────────
 set -euo pipefail
 cd "$(dirname "$0")"
 
 # ---- config (override via environment) --------------------------------------
 SRS="${SRS:-data/srs/Human.xml}"          # smallest subject (2 FRs) → fast demo
-MODEL="${MODEL:-deepseek/deepseek-v3.2}"  # cheapest model in the study
+MODEL="${MODEL:-Qwen/Qwen2.5-Coder-32B-Instruct-AWQ}"  # must match your endpoint's /v1/models
 LANG="${LANG:-python}"                     # python | java | javascript
 STRATEGY="${STRATEGY:-mot}"                # baseline | cot | mot
 OUT="${OUT:-outputs/example}"
 
 # ---- preflight --------------------------------------------------------------
-if [ ! -f .env ] && [ -z "${OPENROUTER_API_KEY:-}${OPENAI_API_KEY:-}" ]; then
-  echo "ERROR: no API key found. Create a .env with:"
-  echo "    OPENROUTER_API_KEY=sk-or-..."
-  echo "  (or export OPENROUTER_API_KEY / OPENAI_API_KEY in your shell)."
+if [ ! -f .env ] && [ -z "${LLM_BASE_URL:-}${OPENAI_BASE_URL:-}${OPENAI_API_KEY:-}" ]; then
+  echo "ERROR: no LLM endpoint configured. Create a .env with:"
+  echo "    LLM_BASE_URL=http://your-server:8000/v1"
+  echo "    LLM_MODEL=Qwen/Qwen2.5-Coder-32B-Instruct-AWQ"
+  echo "  (or OPENAI_API_KEY=sk-... to use api.openai.com)."
   exit 1
 fi
 [ -f .env ] && set -a && . ./.env && set +a || true

@@ -1,0 +1,10 @@
+metric,mean_pipeline,mean_cot,mean_mot
+verification_pass_ratio,,,
+test_case_pass_ratio,,,
+avg_input_token,,,
+avg_output_token,,,
+total_time,,,
+avg_verification_iter,,,
+avg_test_iter,,,
+PassVer@1,,,
+total_tokens,,,

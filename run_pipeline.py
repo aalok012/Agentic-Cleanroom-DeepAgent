@@ -16,7 +16,8 @@ Dafny core, and the Code Agent writes only a thin adapter over it (Stage 4); eve
 full code certified by pass@k in [6] (prove-or-test fallback). The proof tier runs BEFORE codegen
 so the Code Agent knows which features ship from Dafny.
 
-Requires OPENAI_API_KEY (or OPENROUTER_API_KEY) in .env. Set OPENAI_BASE_URL for OpenRouter.
+Talks to any OpenAI-compatible /v1 endpoint. Set LLM_BASE_URL (self-hosted vLLM/Ollama/TGI)
+or OPENAI_API_KEY (api.openai.com) in .env.
 The proof tier additionally needs a `dafny` binary on PATH/$DAFNY.
 
 Every optional agent has its own ON/OFF switch, so any "arm" is just a flag combination — there
@@ -571,8 +572,14 @@ def run(srs_path: Path, output_dir: Path, cfg: RunConfig) -> tuple[dict, dict]:
     # This is compile-diagnostic feedback only: no test cases, expected outputs, or runtime
     # verdicts are fed to the Code Agent. It makes the Java source tree buildable before pass@k.
     if language == "java" and cfg.max_compile_repair_loops > 0:
-        _banner("[5b]", f"Java compile repair — static build check (≤ {cfg.max_compile_repair_loops} repairs)")
-        from src.cleanroom.agents.code.compile_repair import run_java_compile_repair
+        _banner("[5b]", f"Java compile repair — static build check "
+                        f"(≤ {cfg.max_compile_repair_loops} repairs · {cfg.repair_driver})")
+        if cfg.uses_deep_agent():
+            from src.cleanroom.agents.deep.compile_repair import (
+                run_java_compile_repair_deep as run_java_compile_repair,
+            )
+        else:
+            from src.cleanroom.agents.code.compile_repair import run_java_compile_repair
 
         adapter_modules = {
             fid: proved_modules[fid]
@@ -691,6 +698,7 @@ def run(srs_path: Path, output_dir: Path, cfg: RunConfig) -> tuple[dict, dict]:
                 # Live per-iteration metrics, flushed each loop → survives an early stop.
                 iter_log=output_dir / f"{ir['project_name']}_recovery_iters.jsonl",
                 prompt_strategy=ps,
+                repair_driver=cfg.repair_driver,
             )
             recovery = _timed("recovery", stages, lambda: loop.run(cert))
             cert = recovery["result"]
@@ -914,7 +922,8 @@ def append_metric_record(
         f"- agents: {arm}",
         f"- certify={cfg.certify} · samples={cfg.samples} · k={list(cfg.k_values)} · "
         f"prove={cfg.prove} · max_cert_loops={cfg.max_cert_loops} · "
-        f"max_compile_repair_loops={cfg.max_compile_repair_loops}",
+        f"max_compile_repair_loops={cfg.max_compile_repair_loops} · "
+        f"repair_driver={cfg.repair_driver}",
         f"- temperature={cfg.temperature} · cert_temperature={cfg.cert_temperature} · "
         f"prove_rounds={cfg.prove_rounds} · baseline={cfg.baseline}",
         "",
@@ -1097,6 +1106,12 @@ def main() -> None:
     parser.add_argument("--recovery", action=argparse.BooleanOptionalAction, default=True,
                         help="Recovery loop after certification (needs --certify). "
                              "--no-recovery is equivalent to --max-cert-loops 0.")
+    parser.add_argument("--repair-driver", choices=("deterministic", "deepagent"),
+                        default="deterministic",
+                        help="Who drives the repair loops (Java compile repair, recovery regen). "
+                             "'deterministic' (default) = the fixed-round loops that produced the "
+                             "recorded results; 'deepagent' = a LangChain deepagents agent plans and "
+                             "re-checks on its own (needs the `deepagents` package).")
     parser.add_argument("--certify", action=argparse.BooleanOptionalAction, default=False,
                         help="Run the pass@k certification stage (--no-certify to skip; default off).")
     parser.add_argument("--samples", type=int, default=1,
@@ -1182,7 +1197,10 @@ def main() -> None:
         os.environ["CLEANROOM_LLM_DEBUG_ONCE"] = "1"
 
     if not llm_api_key_configured():
-        print("ERROR: No LLM API key found. Set OPENAI_API_KEY or OPENROUTER_API_KEY in .env.")
+        print(
+            "ERROR: No LLM endpoint configured. Set LLM_BASE_URL (self-hosted server) "
+            "or OPENAI_API_KEY (api.openai.com) in .env."
+        )
         sys.exit(1)
 
     # ===== Execute: run the pipeline → persist artifacts → append the model-comparison ledger =====

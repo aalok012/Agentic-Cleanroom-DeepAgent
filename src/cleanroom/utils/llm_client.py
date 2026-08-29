@@ -11,13 +11,25 @@ from src.cleanroom.llms.callbacks.metric import GLOBAL_HANDLER
 
 load_dotenv(override=True)
 
-OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
+# The pipeline talks to any OpenAI-compatible /v1 endpoint — a self-hosted vLLM / SGLang /
+# llama.cpp / TGI / Ollama server, or api.openai.com. Point it at yours with LLM_BASE_URL
+# (OPENAI_BASE_URL is still honoured as an alias):
+#
+#   LLM_BASE_URL=http://localhost:8000/v1                 # tunnel to the Minsky vLLM job
+#   LLM_MODEL=Qwen/Qwen2.5-Coder-32B-Instruct-AWQ
+#   LLM_API_KEY=EMPTY          # most self-hosted servers ignore the key
+#
+# scripts/minsky/tunnel.sh writes that .env for you from the running Slurm job.
+#
+# Model ids are passed through VERBATIM — use exactly what your server's /v1/models lists.
+DEFAULT_LOCAL_API_KEY = "EMPTY"
 
-# Short names used across the pipeline; resolve_model() maps them for OpenRouter when configured.
-# Keep both the normal pipeline and Dafny/proof stages on DeepSeek by default for lower-cost runs.
-DEFAULT_MODEL = "deepseek/deepseek-v3.2"
-DAFNY_MODEL = "deepseek/deepseek-v3.2"
-DEEPSEEK_ONLY = False
+# Default models for the normal pipeline and the Dafny/proof stage. Override per-run with
+# --model, or globally with LLM_MODEL / LLM_DAFNY_MODEL in .env.
+# Qwen2.5-Coder-32B in its official 4-bit AWQ build — the largest coder model that fits
+# Minsky's single 48 GB GPU. See scripts/minsky/models.conf.
+DEFAULT_MODEL = os.getenv("LLM_MODEL") or "Qwen/Qwen2.5-Coder-32B-Instruct-AWQ"
+DAFNY_MODEL = os.getenv("LLM_DAFNY_MODEL") or DEFAULT_MODEL
 
 _DEBUG_ACTIVE_RUN_ID = None
 _DEBUG_INPUT_PRINTED = False
@@ -30,7 +42,7 @@ def _debug_once_enabled() -> bool:
 
 def _llm_timeout() -> float:
     """Per-request HTTP timeout (seconds) for the LLM client. A bounded timeout turns a hung /
-    half-delivered response (the transient OpenRouter `JSONDecodeError` we hit) into a clean
+    half-delivered response (the transient upstream `JSONDecodeError` we hit) into a clean
     timeout the SDK can RETRY instead of crashing the whole run.
 
     Default 120s — generous enough for the Dafny/proof stage's long reasoning responses while
@@ -240,7 +252,7 @@ class _ChatOpenAI(ChatOpenAI):
     """ChatOpenAI hardened for the mixed-model pipeline. Two changes to `with_structured_output`:
 
     1. Default method is `function_calling`, not langchain's `json_schema`. OpenAI/Anthropic honor
-       strict json_schema, but open-weight models on OpenRouter wrap the JSON in a ```json fence,
+       strict json_schema, but open-weight models often wrap the JSON in a ```json fence,
        which the strict parser rejects. Tool-calling args are provider-normalized and work for all.
     2. We request `include_raw=True` under the hood and post-process: if the model emits no clean
        tool call (common for 'thinking' models that answer in prose), we recover the structured
@@ -273,16 +285,18 @@ class _ChatOpenAI(ChatOpenAI):
         return RunnableLambda(_coerce_with_retry)
 
 
-def _using_openrouter() -> bool:
-    if os.getenv("OPENROUTER_API_KEY") and not os.getenv("OPENAI_API_KEY"):
-        return True
-    base = (os.getenv("OPENAI_BASE_URL") or "").lower()
-    return "openrouter.ai" in base
+def llm_base_url() -> str | None:
+    """Base URL of the OpenAI-compatible endpoint, or None for api.openai.com."""
+    return os.getenv("LLM_BASE_URL") or os.getenv("OPENAI_BASE_URL") or None
 
 
 def llm_api_key() -> str | None:
-    """API key for ChatOpenAI — OpenRouter or direct OpenAI."""
-    return os.getenv("OPENAI_API_KEY") or os.getenv("OPENROUTER_API_KEY")
+    """API key for ChatOpenAI. Self-hosted servers usually ignore it, so when a custom
+    base URL is configured we fall back to a placeholder instead of failing."""
+    key = os.getenv("LLM_API_KEY") or os.getenv("OPENAI_API_KEY")
+    if not key and llm_base_url():
+        return DEFAULT_LOCAL_API_KEY
+    return key
 
 
 def llm_api_key_configured() -> bool:
@@ -290,54 +304,47 @@ def llm_api_key_configured() -> bool:
 
 
 def resolve_model(name: str) -> str:
-    """Map a short model name to an OpenRouter slug when routing through OpenRouter."""
-    if "/" in name:
-        return name
-    if name.startswith("deepseek-"):
-        return f"deepseek/{name}"
+    """Model ids are passed through verbatim — whatever the endpoint's /v1/models advertises.
+    LLM_MODEL_PREFIX still prepends a namespace if your server expects one."""
     prefix = os.getenv("LLM_MODEL_PREFIX", "")
-    if not prefix and _using_openrouter():
-        prefix = "openai/"
-    return f"{prefix}{name}" if prefix else name
+    if prefix and not name.startswith(prefix):
+        return f"{prefix}{name}"
+    return name
+
+
+def _floor_temperature(temperature: float) -> float:
+    """Reasoning models (e.g. DeepSeek-R1 distills) degenerate into repetition at
+    temperature 0; DeepSeek recommend ~0.6. CLEANROOM_LLM_TEMPERATURE raises the
+    deterministic default for such a model without touching the certification stage,
+    which passes its own higher temperature to draw diverse pass@k samples."""
+    if temperature != 0.0:
+        return temperature
+    try:
+        return float(os.getenv("CLEANROOM_LLM_TEMPERATURE", "") or 0.0)
+    except ValueError:
+        return 0.0
 
 
 def get_llm(model: str = DEFAULT_MODEL, temperature: float = 0.0) -> ChatOpenAI:
     # temperature defaults to 0 (deterministic) for the generation/judging stages;
     # the certification stage raises it to draw diverse samples for pass@k.
+    temperature = _floor_temperature(temperature)
     # GLOBAL_HANDLER counts tokens/latency for every call (counts only, no content).
-    openrouter_key = os.getenv("OPENROUTER_API_KEY")
-    openai_key = os.getenv("OPENAI_API_KEY")
-    # If only OPENROUTER_API_KEY is set, automatically route to OpenRouter
-    # without requiring OPENAI_BASE_URL to be set.
-    if openrouter_key and not openai_key:
-        base_url = OPENROUTER_BASE_URL
-        api_key = openrouter_key
-    else:
-        base_url = os.getenv("OPENAI_BASE_URL")
-        api_key = openai_key or openrouter_key
-
-    default_headers: dict[str, str] = {}
-    if referer := os.getenv("OPENROUTER_HTTP_REFERER"):
-        default_headers["HTTP-Referer"] = referer
-    if title := os.getenv("OPENROUTER_X_TITLE"):
-        default_headers["X-Title"] = title
+    base_url = llm_base_url()
+    api_key = llm_api_key()
 
     callbacks = [GLOBAL_HANDLER]
     if _debug_once_enabled():
         callbacks.append(_OneShotLLMDebugCallback())
 
     resolved_model = resolve_model(model)
-    if DEEPSEEK_ONLY and "deepseek" not in resolved_model.lower():
-        raise ValueError(
-            f"DeepSeek-only mode is active; refusing to create LLM client for {resolved_model!r}."
-        )
 
     kwargs: dict = {
         "model": resolved_model,
         "temperature": temperature,
         "api_key": api_key,
         "callbacks": callbacks,
-        # Bounded per-request timeout + automatic retries so a transient OpenRouter hiccup
+        # Bounded per-request timeout + automatic retries so a transient endpoint hiccup
         # (timeout / 429 / 5xx / half-delivered body → JSONDecodeError) is retried instead of
         # killing the whole run. Both env-tunable (CLEANROOM_LLM_TIMEOUT / _MAX_RETRIES).
         "timeout": _llm_timeout(),
@@ -345,18 +352,7 @@ def get_llm(model: str = DEFAULT_MODEL, temperature: float = 0.0) -> ChatOpenAI:
     }
     if base_url:
         kwargs["base_url"] = base_url
-    if default_headers:
-        kwargs["default_headers"] = default_headers
-
-    # OpenRouter provider routing. By default we let OpenRouter pick the provider: with
-    # function-calling structured output (see _ChatOpenAI), the default routing already returns
-    # proper tool calls for open models. Opt in to strict capability matching with
-    # OPENROUTER_REQUIRE_PARAMETERS=1 — but note it can over-constrain routing to a 404
-    # ("No endpoints found that can handle the requested parameters") when tools are in play.
-    on_openrouter = (openrouter_key and not openai_key) or "openrouter.ai" in (base_url or "").lower()
-    if on_openrouter and os.getenv("OPENROUTER_REQUIRE_PARAMETERS", "").lower() in ("1", "true", "yes"):
-        kwargs["extra_body"] = {"provider": {"require_parameters": True}}
 
     # _ChatOpenAI defaults structured output to function/tool calling (see class docstring) so
-    # open models on OpenRouter work; for OpenAI/Anthropic it behaves the same as plain ChatOpenAI.
+    # open-weight models served locally work; for OpenAI it behaves the same as plain ChatOpenAI.
     return _ChatOpenAI(**kwargs)

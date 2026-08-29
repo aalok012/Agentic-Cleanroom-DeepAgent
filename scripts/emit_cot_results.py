@@ -11,13 +11,19 @@ from __future__ import annotations
 
 import csv
 import json
+import os
+import sys
 import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT))
+
+from src.cleanroom.utils.llm_client import DEFAULT_MODEL  # noqa: E402
 SRS_DIR = ROOT / "data" / "srs"
 BASE = ROOT / "outputs" / "cot"
-MODEL = "deepseek/deepseek-v3.2"
+# Model under test — follows .env (LLM_MODEL) rather than a hardcoded slug.
+MODEL = os.getenv("EXPERIMENT_MODEL") or DEFAULT_MODEL
 FLAGS = "--prove --certify --max-cert-loops 4 --prove-rounds 4"
 LANGS = ["python", "java", "javascript"]
 COMBINED_CSV = ROOT / "cot_deepseek_results.csv"

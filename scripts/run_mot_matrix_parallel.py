@@ -25,10 +25,14 @@ import time
 from datetime import datetime
 from pathlib import Path
 
+from src.cleanroom.utils.llm_client import DEFAULT_MODEL  # noqa: E402
+
 ROOT = Path(__file__).resolve().parent.parent
 os.chdir(ROOT)
 
-MODEL = "deepseek/deepseek-v3.2"
+# Model under test. Defaults to whatever .env configures (LLM_MODEL), so this driver
+# follows the served model instead of the retired OpenRouter slug it was written against.
+MODEL = os.getenv("EXPERIMENT_MODEL") or DEFAULT_MODEL
 FLAGS = ["--prove", "--certify", "--max-cert-loops", "4", "--prove-rounds", "4"]
 BASE = ROOT / "outputs" / "mot"
 LANGS = [("python", "fastapi"), ("java", "spring"), ("javascript", "express")]

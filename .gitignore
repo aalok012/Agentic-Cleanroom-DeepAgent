@@ -112,3 +112,6 @@ tempCodeRunnerFile.py
 # OS
 .DS_Store
 Thumbs.db
+
+# .env.example IS committed — it holds no secrets
+!.env.example

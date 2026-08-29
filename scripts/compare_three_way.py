@@ -21,17 +21,27 @@ headline metrics) and writes three_way_summary_deepseek.csv. Run from anywhere:
 """
 from __future__ import annotations
 
+import argparse
 import csv
 import json
+import os
+import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT))
+
+from src.cleanroom.utils.llm_client import DEFAULT_MODEL  # noqa: E402
 BASELINE_CSV = ROOT / "experiment_metrics.csv"
 COT_CSV = ROOT / "cot_deepseek_results.csv"
 MOT_CSV = ROOT / "mot_deepseek_results.csv"
 MOT_OUTPUTS = ROOT / "outputs" / "mot"
 SRS_DIR = ROOT / "data" / "srs"
 LANGS = ["python", "java", "javascript"]
+
+# Which rows of the baseline ledger count as the "pipeline" arm. Defaults to the model
+# under test; override with --model-filter (use "deepseek" for the archived paper runs).
+MODEL_FILTER = os.getenv("EXPERIMENT_MODEL") or DEFAULT_MODEL
 
 OUT = ROOT / "three_way_deepseek.csv"
 OUT_SUMMARY = ROOT / "three_way_summary_deepseek.csv"
@@ -70,13 +80,16 @@ def _num(v):
         return None
 
 
-def _load_csv(path: Path, deepseek_only: bool) -> dict[tuple[str, str], dict]:
+def _load_csv(path: Path, model_filter: str | None) -> dict[tuple[str, str], dict]:
+    """Rows keyed by (srs, language). `model_filter` keeps only rows whose `model`
+    column contains that substring — the baseline ledger holds every model ever run,
+    so the pipeline arm must be narrowed to the one under test."""
     out: dict[tuple[str, str], dict] = {}
     if not path.exists():
         return out
     with path.open() as f:
         for r in csv.DictReader(f):
-            if deepseek_only and "deepseek" not in (r.get("model", "").lower()):
+            if model_filter and model_filter.lower() not in (r.get("model", "").lower()):
                 continue
             out[(r.get("srs", ""), r.get("language", ""))] = r
     return out
@@ -106,7 +119,7 @@ def _load_mot_from_outputs() -> dict[tuple[str, str], dict]:
 
 
 def _load_mot() -> tuple[dict[tuple[str, str], dict], str]:
-    rows = _load_csv(MOT_CSV, deepseek_only=False)
+    rows = _load_csv(MOT_CSV, model_filter=None)
     if rows:
         return rows, f"{MOT_CSV.name}"
     rows = _load_mot_from_outputs()
@@ -121,8 +134,16 @@ def _mean(values: list) -> float | None:
 
 
 def main() -> None:
-    base = _load_csv(BASELINE_CSV, deepseek_only=True)
-    cot = _load_csv(COT_CSV, deepseek_only=False)
+    global MODEL_FILTER
+    ap = argparse.ArgumentParser(description=__doc__)
+    ap.add_argument(
+        "--model-filter", default=MODEL_FILTER,
+        help="substring matched against the baseline ledger's `model` column "
+             "(default: the model under test; pass 'deepseek' to reproduce the archived runs)")
+    MODEL_FILTER = ap.parse_args().model_filter
+
+    base = _load_csv(BASELINE_CSV, model_filter=MODEL_FILTER)
+    cot = _load_csv(COT_CSV, model_filter=None)
     mot, mot_src = _load_mot()
 
     cols = ["srs", "language"]
@@ -168,7 +189,7 @@ def main() -> None:
 
     # ---- console report ----
     print(f"wrote {OUT.name}  ({len(rows)} complete (srs,language) triples)")
-    print(f"  pipeline rows: {len(base)} (experiment_metrics.csv, deepseek)")
+    print(f"  pipeline rows: {len(base)} (experiment_metrics.csv, model~{MODEL_FILTER!r})")
     print(f"  cot rows:      {len(cot)} ({COT_CSV.name})")
     print(f"  mot rows:      {len(mot)}  source: {mot_src}")
     if omitted:

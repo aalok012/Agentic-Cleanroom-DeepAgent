@@ -59,6 +59,7 @@ class RecoveryLoop:
         dafny_model: str = DAFNY_MODEL,
         iter_log: Path | None = None,
         prompt_strategy: str = "baseline",
+        repair_driver: str = "deterministic",
     ) -> None:
         self.ir = ir
         self.stack = stack
@@ -74,6 +75,13 @@ class RecoveryLoop:
         self.max_loops = max_loops
         self.prove_target = prove_target
         self.dafny_model = dafny_model
+        # 'deterministic' = one independent regeneration call per failing FR (the recorded
+        # behaviour). 'deepagent' = one agent holds every failing FR of the feature at once,
+        # so a failure caused by two FRs disagreeing about a shared shape is fixable. The
+        # re-certification in step (c) stays OUTSIDE the agent either way — the agent never
+        # gets to iterate against the oracle it is scored on.
+        self.repair_driver = repair_driver
+        self.regen_metrics: list[dict] = []
         # If set, each iteration's full metrics are flushed here as a JSON line the moment it
         # finishes — so you can stop the run early (Ctrl-C / kill) and keep the per-iteration data.
         self.iter_log = Path(iter_log) if iter_log else None
@@ -108,11 +116,10 @@ class RecoveryLoop:
             # (b) regenerate the still-failing features WITH failing test cases (clean-room break).
             still = failing - newly_proved
             if still:
-                regen = CodeAgent(llm=get_llm(temperature=temp), stack=self.stack,
-                                  prompt_strategy=self.prompt_strategy)
-                new_files = regen.regenerate_with_test_feedback(self.ir, still, result.failures)
+                new_files = self._regenerate(still, result.failures, temp)
                 self._swap_files(new_files)
-                print(f"     regenerated {len(new_files)} file(s) for {sorted(still)} with test feedback")
+                print(f"     regenerated {len(new_files)} file(s) for {sorted(still)} with test feedback"
+                      f" ({self.repair_driver})")
 
             self._rebuild_app()
 
@@ -148,6 +155,8 @@ class RecoveryLoop:
         return {
             "result": result,
             "loops": loops,
+            "repair_driver": self.repair_driver,
+            "regen_metrics": self.regen_metrics,
             "proved_feature_ids": sorted(self.proved_feature_ids),
             "labels": self._labels(first_failing, repaired_by_proof, repaired_by_tests, final_failing),
             "repaired_by_proof": sorted(repaired_by_proof),
@@ -178,6 +187,24 @@ class RecoveryLoop:
             "total_frs": total,
             "passver_at_1": round(len(certified_fr) / total, 3),
         }
+
+    # --- (b) regenerate with test feedback -------------------------------------
+    def _regenerate(self, feature_ids: set[str], failures: list[dict], temp: float) -> list:
+        """Re-emit the failing features' code WITH their failing cases (the clean-room break).
+
+        Both drivers return the same thing — a list of GeneratedFile whose identity fields come
+        from the planner's contract — so ``_swap_files`` is unchanged.
+        """
+        if self.repair_driver == "deepagent":
+            from src.cleanroom.agents.deep.recovery import deep_regenerate_with_test_feedback
+
+            files, metrics = deep_regenerate_with_test_feedback(
+                self.ir, feature_ids, failures, temperature=temp)
+            self.regen_metrics.append(metrics)
+            return files
+        regen = CodeAgent(llm=get_llm(temperature=temp), stack=self.stack,
+                          prompt_strategy=self.prompt_strategy)
+        return regen.regenerate_with_test_feedback(self.ir, feature_ids, failures)
 
     # --- (a) re-prove ----------------------------------------------------------
     def _reprove(self, feature_ids: list[str], rounds: int) -> set[str]:

@@ -7,7 +7,7 @@ pass@k, etc. Defaults preserve today's behavior (all stages on `DEFAULT_MODEL`, 
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 from src.cleanroom.utils.llm_client import DAFNY_MODEL, DEFAULT_MODEL
 
@@ -45,6 +45,12 @@ class RunConfig:
     max_cert_loops: int = 2
     max_compile_repair_loops: int = 2
 
+    # --- repair driver ---
+    # 'deterministic' (default) = the fixed-round loops that produced every existing result;
+    # 'deepagent' = LangChain deepagents drives the compile-repair and recovery-regen steps,
+    # planning and re-checking on its own. Opt-in so recorded runs stay reproducible.
+    repair_driver: str = "deterministic"
+
     # --- per-agent ON/OFF switches (compose any arm; required agents Spec/Planning/Code
     #     have no switch — they are the irreducible spec->code task given to every arm) ---
     run_dependency: bool = True       # Dependency agent (semantic FR graph). Off => empty graph.
@@ -79,6 +85,10 @@ class RunConfig:
             "compile_repair": self.language == "java" and self.max_compile_repair_loops > 0,
         }
 
+    def uses_deep_agent(self) -> bool:
+        """True when the deepagents-driven repair loops replace the deterministic ones."""
+        return self.repair_driver == "deepagent"
+
     def as_dict(self) -> dict:
         return {
             "language": self.language, "stack": self.stack, "models": self.models_used(),
@@ -90,13 +100,14 @@ class RunConfig:
             "prove": self.prove, "prove_target": self.prove_target,
             "max_cert_loops": self.max_cert_loops,
             "max_compile_repair_loops": self.max_compile_repair_loops,
+            "repair_driver": self.repair_driver,
             "temperature": self.temperature,
             "cert_temperature": self.cert_temperature, "case_timeout": self.case_timeout,
             "prove_rounds": self.prove_rounds, "llm_deps": self.llm_deps, "baseline": self.baseline,
         }
 
     @classmethod
-    def from_args(cls, args) -> "RunConfig":
+    def from_args(cls, args) -> RunConfig:
         """Build from an argparse Namespace. Java fixes its own stack; --prove-target follows the
         language unless overridden. `--baseline` is a control preset: it forces proof OFF, recovery
         OFF, regex-only dependencies, and temperature 0 (other flags still apply)."""
@@ -152,6 +163,7 @@ class RunConfig:
             prove_target=prove_target,
             max_cert_loops=max_loops,
             max_compile_repair_loops=getattr(args, "max_compile_repair_loops", 2),
+            repair_driver=getattr(args, "repair_driver", "deterministic"),
             temperature=0.0 if baseline else getattr(args, "temperature", 0.0),
             cert_temperature=getattr(args, "cert_temperature", 0.4),
             case_timeout=getattr(args, "case_timeout", 10.0),

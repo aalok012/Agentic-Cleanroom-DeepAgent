@@ -1,11 +1,19 @@
 """Rough USD cost estimate from token counts.
 
 Prices are USD per 1M tokens and may drift over time — update PRICING if they change.
+For models served on your own hardware there is no per-token bill; the estimate is only
+meaningful for hosted APIs, so treat it as an upper bound on a self-hosted run.
 """
 
 from src.cleanroom.utils.llm_client import DEFAULT_MODEL
 
 PRICING: dict[str, dict[str, float]] = {
+    # Self-hosted on Minsky — no per-token bill. Kept at 0 so the cost column stays
+    # present (and honest) for runs served from our own GPU.
+    "qwen2.5-coder-32b-instruct-awq": {"input": 0.0, "output": 0.0},
+    "qwen2.5-coder-32b-instruct": {"input": 0.0, "output": 0.0},
+    "deepseek-r1-distill-qwen-32b": {"input": 0.0, "output": 0.0},
+    # Hosted APIs used for the archived baselines in results/raw_results/.
     "deepseek-v3.2": {"input": 0.2288, "output": 0.3432},
     "gpt-4o-mini": {"input": 0.15, "output": 0.60},
     "gpt-4o": {"input": 2.50, "output": 10.00},
@@ -16,8 +24,9 @@ PRICING: dict[str, dict[str, float]] = {
 
 
 def _normalize_model(model: str) -> str:
-    """Strip an OpenRouter-style provider prefix (``openai/gpt-4.1`` → ``gpt-4.1``)."""
-    return model.split("/", 1)[1] if "/" in model else model
+    """Strip a namespace prefix and casefold (``deepseek-ai/DeepSeek-V3.2`` → ``deepseek-v3.2``),
+    so HuggingFace-style ids from a self-hosted server still match PRICING."""
+    return (model.split("/", 1)[1] if "/" in model else model).lower()
 
 
 def _rates(model: str) -> dict[str, float]:

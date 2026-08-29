@@ -34,7 +34,8 @@ The pipeline stages are: **Spec** (deterministic FR parse + LLM behavioral contr
 ## Requirements
 
 - **Python ≥ 3.11** and [**uv**](https://docs.astral.sh/uv/) for environment management.
-- An LLM API key — **OpenRouter** (recommended; all paper runs used it) or **OpenAI**.
+- An **OpenAI-compatible `/v1` endpoint** — a self-hosted open-weight server (vLLM, SGLang,
+  llama.cpp, TGI, or Ollama) or **OpenAI**.
 - For the **proof track**: the [**Dafny**](https://github.com/dafny-lang/dafny) verifier on your `PATH`.
 - For the **Java / Spring** target: a JDK + Maven. For **JavaScript / Express**: Node.js.
 
@@ -44,9 +45,19 @@ The pipeline stages are: **Spec** (deterministic FR parse + LLM behavioral contr
 # 1. clone, then create the environment from the locked dependencies
 uv sync
 
-# 2. provide an API key (OpenRouter routes to every model in the study)
-echo 'OPENROUTER_API_KEY=sk-or-...' > .env
-#   (alternatively: OPENAI_API_KEY=sk-... for the OpenAI endpoint)
+# 2. point the pipeline at your LLM endpoint
+cat > .env <<'EOF'
+LLM_BASE_URL=http://localhost:8000/v1               # OpenAI-compatible endpoint
+LLM_MODEL=Qwen/Qwen2.5-Coder-32B-Instruct-AWQ       # id exactly as /v1/models lists it
+LLM_API_KEY=EMPTY                                   # most self-hosted servers ignore this
+EOF
+#   (alternatively: OPENAI_API_KEY=sk-... on its own for api.openai.com)
+#
+#   Serving on a Slurm GPU cluster? scripts/minsky/ generates this .env for you
+#   from the running job — see scripts/minsky/README.md.
+
+# check the server is reachable and see the model ids it serves
+curl -s "$LLM_BASE_URL/models" | python -m json.tool
 ```
 
 ## Quick start
@@ -57,21 +68,48 @@ Run the full pipeline on a single specification and print where the per-requirem
 ./run_example.sh
 ```
 
-By default this proves + certifies the smallest subject (`Human.xml`, 2 FRs) with DeepSeek in Python. Override anything via environment variables:
+By default this proves + certifies the smallest subject (`Human.xml`, 2 FRs) with Qwen2.5-Coder-32B in Python. Override anything via environment variables:
 
 ```bash
-MODEL=openai/gpt-5.1 LANG=java SRS="data/srs/dineout_srs.xml" ./run_example.sh
+MODEL=gpt-5.1 LANG=java SRS="data/srs/dineout_srs.xml" ./run_example.sh
 ```
 
 Or call the pipeline directly:
 
 ```bash
 uv run python run_pipeline.py data/srs/Human.xml \
-  --model deepseek/deepseek-v3.2 --language python \
+  --model Qwen/Qwen2.5-Coder-32B-Instruct-AWQ --language python \
   --prompt-strategy mot --prove --certify
 ```
 
-Key flags: `--language {python,java,javascript}`, `--prompt-strategy {baseline,cot,mot}`, `--prove` (proof track), `--certify` (pass@k track), `--model` (any OpenRouter/OpenAI id). Artifacts, a run report, and per-run metrics JSON are written under `--output-dir` (default `outputs/`).
+Key flags: `--language {python,java,javascript}`, `--prompt-strategy {baseline,cot,mot}`, `--prove` (proof track), `--certify` (pass@k track), `--model` (any id your endpoint serves). Artifacts, a run report, and per-run metrics JSON are written under `--output-dir` (default `outputs/`).
+
+### Repair driver (`--repair-driver`)
+
+The two repair loops — Java compile repair (stage 5b) and the recovery loop's test-informed
+regeneration (stage 6b, step b) — can be driven two ways:
+
+| | `deterministic` (default) | `deepagent` |
+|---|---|---|
+| control | fixed rounds; one LLM call per broken artifact | a [LangChain deepagents](https://docs.langchain.com/oss/python/deepagents) agent plans with `write_todos` and re-checks itself |
+| compile repair | repair each mapped file, rebuild, repeat | agent reads/edits sources and calls `compile_check` until the build is green |
+| recovery regen | one independent call per failing FR | one agent holds every failing FR of the feature at once, so cross-FR shape mismatches are fixable |
+| budget | `--max-compile-repair-loops` rounds | agent steps, `CLEANROOM_DEEP_MAX_STEPS` (default 60) × rounds |
+
+`deterministic` is the default because every recorded result under `results/` was produced with
+it — opt in with `--repair-driver deepagent` rather than changing a comparison mid-flight.
+
+**Isolation is preserved.** The compile-repair agent's filesystem is a virtual `StateBackend`
+seeded with generated *code* only, so `ls`/`grep`/`read_file` cannot reach a test source or the
+real disk, and test-file compiler diagnostics are scrubbed before the code agent sees them. Test
+sources are repaired by a *separate* agent invocation — never a subagent, which would share the
+parent's filesystem. Recovery's agent does see failing cases (that is the sanctioned clean-room
+break), but gets no test-execution tool: re-certification stays outside the agent so it cannot
+iterate against the oracle it is scored on.
+
+The deep agent runs on the same `get_llm()` client as everything else, so its calls appear in the
+run's existing token/latency/cost metrics. It needs an endpoint with working **tool calling**
+(for vLLM, launch with a `--tool-call-parser` matching your model).
 
 ---
 
@@ -125,6 +163,7 @@ Sources live in [`data/srs/`](data/srs/).
 ├── run_example.sh           # one-command end-to-end demo
 ├── src/cleanroom/
 │   ├── agents/              # spec · dependency · planning · code · test · dafny · recovery · evaluation · baseline
+│   │   └── deep/            # optional deepagents drivers for the compile-repair / recovery loops
 │   ├── targets/             # python / java-spring / js-express code targets
 │   └── utils/               # prompt rendering, Dafny marshalling, packagers, metrics
 ├── data/srs/                # the 10-SRS benchmark
