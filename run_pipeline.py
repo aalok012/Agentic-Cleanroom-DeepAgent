@@ -350,7 +350,7 @@ def run(srs_path: Path, output_dir: Path, cfg: RunConfig) -> tuple[dict, dict]:
     if "planning" in done:
         print(f"  [skip — resumed] planning loaded: {len(ir['planning']['contracts'])} contract(s).")
     else:
-        ir = _timed("planning", stages, lambda: PlanningAgent(llm=plan_llm, stack=stack, prompt_strategy=ps).enrich(ir, output_dir=output_dir))
+        ir = _timed("planning", stages, lambda: PlanningAgent(llm=plan_llm, stack=stack, prompt_strategy=ps, gen_driver=cfg.gen_driver).enrich(ir, output_dir=output_dir))
         contracts = ir["planning"]["contracts"]
         print(f"Contracts   : {len(contracts)}  (in dependency order)")
         for c in contracts[:12]:
@@ -404,7 +404,7 @@ def run(srs_path: Path, output_dir: Path, cfg: RunConfig) -> tuple[dict, dict]:
             proj = _timed("scaffold", stages, lambda: scaffold_dafny_project(project_dir))
             gen = _timed("dafny", stages,
                          lambda: DafnyAgent(proj, model=cfg.proof_model, max_rounds=cfg.prove_rounds,
-                                            prompt_strategy=ps).generate(ir))
+                                            prompt_strategy=ps, gen_driver=cfg.gen_driver).generate(ir))
             proved_feature_ids = {f.feature_id for f in gen.features if f.verified}
             proved_modules = {f.feature_id: f.module for f in gen.features if f.verified}
             proved_sources = {f.feature_id: f.dafny_source for f in gen.features if f.verified}
@@ -464,7 +464,8 @@ def run(srs_path: Path, output_dir: Path, cfg: RunConfig) -> tuple[dict, dict]:
     # --- Stage 4: Code (LLM) — adapters over proved cores + full code for the rest ----
     # code_agent / code_dir are defined unconditionally (the Test, compile-repair, cert and
     # recovery stages all reference them) even when the codegen itself is skipped on resume.
-    code_agent = CodeAgent(llm=code_llm, stack=stack, language=language, prompt_strategy=ps)
+    code_agent = CodeAgent(llm=code_llm, stack=stack, language=language, prompt_strategy=ps,
+                           gen_driver=cfg.gen_driver)
     code_dir = output_dir / "generated" / ir["project_name"]
     if "code" in done:
         _banner("[4]", "Code Agent — [skip — resumed]")
@@ -538,7 +539,8 @@ def run(srs_path: Path, output_dir: Path, cfg: RunConfig) -> tuple[dict, dict]:
         _banner("[5]", "Test Agent — [skip — resumed]")
         generated_tests_dict = ir.get("generated_tests")
         if cfg.run_test:
-            test_agent_runner = TestAgent(llm=test_llm, stack=stack, language=language, prompt_strategy=ps)
+            test_agent_runner = TestAgent(llm=test_llm, stack=stack, language=language, prompt_strategy=ps,
+                                       gen_driver=cfg.gen_driver)
         print(f"  loaded {len((generated_tests_dict or {}).get('features', []))} tested "
               "feature(s) from checkpoint (test modules already on disk).")
     elif not cfg.run_test:
@@ -550,7 +552,8 @@ def run(srs_path: Path, output_dir: Path, cfg: RunConfig) -> tuple[dict, dict]:
         _checkpoint("test", ir)
     else:
         _banner("[5]", "Test Agent — deriving black-box tests from the spec")
-        test_agent_runner = TestAgent(llm=test_llm, stack=stack, language=language, prompt_strategy=ps)
+        test_agent_runner = TestAgent(llm=test_llm, stack=stack, language=language, prompt_strategy=ps,
+                                       gen_driver=cfg.gen_driver)
         generated_tests = _timed("test", stages, lambda: test_agent_runner.generate(ir))
         generated_tests_dict = generated_tests.model_dump()
         ir = {**ir, "generated_tests": generated_tests_dict}
@@ -1106,6 +1109,14 @@ def main() -> None:
     parser.add_argument("--recovery", action=argparse.BooleanOptionalAction, default=True,
                         help="Recovery loop after certification (needs --certify). "
                              "--no-recovery is equivalent to --max-cert-loops 0.")
+    parser.add_argument("--gen-driver", choices=("deterministic", "deepagent"),
+                        default="deterministic",
+                        help="Who drives PLANNING/CODE/TEST/PROOF generation. 'deterministic' "
+                             "(default) = one structured call per contract/feature, as every "
+                             "recorded result was produced; 'deepagent' = each stage runs as a "
+                             "deepagents agent that reads its own briefing and submits through "
+                             "validated tools (needs the `deepagents` package). Clean-room "
+                             "isolation holds either way — see agents/deep/README.md.")
     parser.add_argument("--repair-driver", choices=("deterministic", "deepagent"),
                         default="deterministic",
                         help="Who drives the repair loops (Java compile repair, recovery regen). "

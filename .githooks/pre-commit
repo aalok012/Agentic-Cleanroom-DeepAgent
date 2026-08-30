@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+# Block a commit that breaks clean-room isolation. Enable once with:
+#     git config core.hooksPath .githooks
+set -e
+echo "── checking clean-room isolation…"
+uv run pytest tests/test_isolation.py -q || {
+  echo "ISOLATION BROKEN — commit refused. This is the paper's core claim."
+  exit 1
+}

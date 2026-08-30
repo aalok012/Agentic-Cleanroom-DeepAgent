@@ -36,6 +36,9 @@ from src.cleanroom.utils.llm_client import get_llm
 # glob in one driver can never name a path belonging to another.
 CODE_ROOT = "/code"
 TEST_ROOT = "/tests"
+PROOF_ROOT = "/proof"
+SPEC_ROOT = "/spec"
+SKILL_ROOT = "/skills"
 
 
 class DeepAgentUnavailable(RuntimeError):
@@ -71,6 +74,58 @@ def deep_max_steps(default: int = 60) -> int:
         return max(4, int(os.getenv("CLEANROOM_DEEP_MAX_STEPS", str(default))))
     except ValueError:
         return default
+
+
+# Where authored skill documents live. Both are static, in-repo, human-written guidance —
+# never generated artifacts — so seeding one into an agent cannot leak another agent's output.
+_SKILL_DIRS = (
+    os.path.join(os.path.dirname(__file__), "skills"),
+    os.path.join(os.path.dirname(os.path.dirname(__file__)), "dafny", "skills"),
+)
+
+
+def load_skills(names: list[str]) -> dict[str, str]:
+    """``{virtual_path: content}`` for authored skill documents, to seed into an agent.
+
+    ==========================  WHY NOT ``skills=`` ==========================
+    ``create_deep_agent(skills=[...])`` resolves skill directories THROUGH THE BACKEND: it
+    puts each skill's name/description in the system prompt with "Read `<path>/SKILL.md` for
+    full instructions", and the agent then loads the body with ``read_file``. Under our
+    ``StateBackend`` that path does not exist, so no skill is discovered and the parameter
+    silently does nothing (verified against deepagents 0.6.12).
+
+    Making it work would mean a ``FilesystemBackend`` — the disk exposure we rejected, and the
+    one thing that would break clean-room isolation.
+
+    So we implement the same idea safely: seed the documents into the agent's own virtual
+    filesystem under ``/skills`` and point the system prompt at them. Progressive disclosure is
+    preserved (the agent reads a document only when it decides it needs it), and the content
+    stays author-controlled with no disk access whatsoever.
+    ==========================================================================
+    """
+    out: dict[str, str] = {}
+    for name in names:
+        for directory in _SKILL_DIRS:
+            path = os.path.join(directory, f"{name}.md")
+            if os.path.exists(path):
+                with open(path) as fh:
+                    out[f"{SKILL_ROOT}/{name}.md"] = fh.read()
+                break
+        else:
+            raise FileNotFoundError(f"no skill document named {name!r} in {_SKILL_DIRS}")
+    return out
+
+
+def skill_index(skills: dict[str, str]) -> str:
+    """A short catalogue for the system prompt: path + first heading of each document."""
+    if not skills:
+        return ""
+    lines = []
+    for path, content in sorted(skills.items()):
+        title = next((ln.lstrip("# ").strip() for ln in content.splitlines()
+                      if ln.startswith("#")), path.rsplit("/", 1)[-1])
+        lines.append(f"* `{path}` — {title}")
+    return "\n".join(lines)
 
 
 def seed_files(mapping: dict[str, str]) -> dict[str, Any]:

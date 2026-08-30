@@ -73,7 +73,10 @@ def _extract_code_block(text: str) -> str:
 
 class CodeAgent:
     def __init__(self, llm=None, stack: str = "python", language: str = "python",
-                 prompt_strategy: str = "baseline") -> None:
+                 prompt_strategy: str = "baseline", gen_driver: str = "deterministic") -> None:
+        # 'deepagent' routes generate() through agents/deep/generation.py. The deep driver's
+        # filesystem is seeded with contracts only — never tests — so isolation is unchanged.
+        self.gen_driver = gen_driver
         # `llm` is injectable purely so tests can avoid network calls; it is NOT a
         # channel for test data. Defaults to the shared cost-control model client.
         self.llm = llm if llm is not None else get_llm()
@@ -107,6 +110,9 @@ class CodeAgent:
         contracts = ir["planning"]["contracts"]
 
         skip = set(skip_feature_ids or ())
+        if getattr(self, "gen_driver", "deterministic") == "deepagent":
+            return self._generate_deep(ir, contracts, skip)
+
         req_text = self._requirement_index(ir)        # fr_id -> spec requirement text
         by_fr = {c["fr_id"]: c for c in contracts}     # fr_id -> contract (for prereq signatures)
         files: list[GeneratedFile] = []
@@ -171,6 +177,30 @@ class CodeAgent:
                 )
             )
 
+        return GeneratedCode(files=files)
+
+    def _generate_deep(self, ir: dict, contracts: list[dict], skip: set[str]) -> GeneratedCode:
+        """deepagents counterpart to :meth:`generate`, one agent per feature.
+
+        Per feature rather than per FR (as the deterministic loop does) or all at once: FRs in
+        a feature share data shapes, so the agent can cross-read them and keep them consistent,
+        while a whole-IR invocation would blow past the context window on a large SRS.
+        Features keep their dependency order, so a later feature is still generated after the
+        ones it depends on.
+        """
+        from src.cleanroom.agents.deep.generation import deep_generate_code  # noqa: PLC0415
+
+        by_feature: dict[str, list[dict]] = {}
+        for contract in contracts:                     # already in dependency order
+            if contract["feature_id"] in skip:
+                continue
+            by_feature.setdefault(contract["feature_id"], []).append(contract)
+
+        files: list[GeneratedFile] = []
+        for feature_contracts in by_feature.values():
+            produced, _metrics = deep_generate_code(
+                ir, feature_contracts, language=self.language)
+            files.extend(produced)
         return GeneratedCode(files=files)
 
     def generate_adapter(

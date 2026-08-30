@@ -1,0 +1,31 @@
+# The clean-room isolation guarantee is the paper's core claim, so a regression in it is a
+# build failure rather than a review comment. These tests are offline (scripted fake model):
+# no GPU, no API key, no endpoint required.
+name: isolation
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  isolation:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Sync dependencies
+        run: uv sync --frozen
+
+      # Run the isolation suite FIRST and alone, so a failure here is unambiguous
+      # rather than buried in unrelated output.
+      - name: Clean-room isolation guarantee
+        run: uv run pytest tests/test_isolation.py -v
+
+      - name: Deep driver tests
+        run: uv run pytest tests/ -q

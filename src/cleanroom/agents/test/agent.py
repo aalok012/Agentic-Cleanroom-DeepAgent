@@ -65,7 +65,11 @@ class TestAgent:
     __test__ = False
 
     def __init__(self, llm=None, stack: str = "python", language: str = "python",
+                 gen_driver: str = "deterministic",
                  prompt_strategy: str = "baseline") -> None:
+        # 'deepagent' routes generate() through agents/deep/generation.py. That driver's
+        # filesystem holds contracts and its own test file only — never generated code.
+        self.gen_driver = gen_driver
         # `llm` is injectable only so tests can avoid network calls; it is NOT a
         # channel for implementation data. Defaults to the shared cost-control model client.
         self.llm = llm if llm is not None else get_llm()
@@ -88,7 +92,27 @@ class TestAgent:
         PlanningAgent.normalize_ir_planning(ir)
         features: list[FeatureTests] = []
 
+        deep = getattr(self, "gen_driver", "deterministic") == "deepagent"
+        contracts_by_feature: dict[str, list[dict]] = {}
+        if deep:
+            # The deep test agent is briefed from the planner's CONTRACTS, exactly as the code
+            # and proof agents are, so all three derive from byte-identical sheets. Its
+            # filesystem never contains generated code — see agents/deep/generation.py.
+            from src.cleanroom.agents.deep.generation import deep_generate_tests  # noqa: PLC0415
+
+            for c in (ir.get("planning") or {}).get("contracts", []) or []:
+                contracts_by_feature.setdefault(str(c["feature_id"]), []).append(c)
+
         for unit in feature_units(ir):  # the ONLY IR read: features/requirements
+            if deep:
+                feature_id = str(unit["feature_id"])
+                result, _metrics = deep_generate_tests(
+                    ir, feature_id, contracts_by_feature.get(feature_id, []),
+                    language=self.language)
+                if result is not None:
+                    features.append(result)
+                continue
+
             prompt = self.renderer.render(
                 cot_template(self.target.test_template(), self.prompt_strategy),
                 {

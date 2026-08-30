@@ -51,6 +51,13 @@ class RunConfig:
     # planning and re-checking on its own. Opt-in so recorded runs stay reproducible.
     repair_driver: str = "deterministic"
 
+    # --- generation driver ---
+    # 'deterministic' (default) = one structured call per contract/feature, as every recorded
+    # result was produced. 'deepagent' = the planning, code, test and proof stages each run as
+    # a deepagents agent that reads its own briefing and submits through validated tools.
+    # Opt-in, so both arms stay runnable for comparison.
+    gen_driver: str = "deterministic"
+
     # --- per-agent ON/OFF switches (compose any arm; required agents Spec/Planning/Code
     #     have no switch — they are the irreducible spec->code task given to every arm) ---
     run_dependency: bool = True       # Dependency agent (semantic FR graph). Off => empty graph.
@@ -89,6 +96,10 @@ class RunConfig:
         """True when the deepagents-driven repair loops replace the deterministic ones."""
         return self.repair_driver == "deepagent"
 
+    def uses_deep_generation(self) -> bool:
+        """True when planning/code/test/proof run as deepagents rather than single calls."""
+        return self.gen_driver == "deepagent"
+
     def as_dict(self) -> dict:
         return {
             "language": self.language, "stack": self.stack, "models": self.models_used(),
@@ -101,6 +112,7 @@ class RunConfig:
             "max_cert_loops": self.max_cert_loops,
             "max_compile_repair_loops": self.max_compile_repair_loops,
             "repair_driver": self.repair_driver,
+            "gen_driver": self.gen_driver,
             "temperature": self.temperature,
             "cert_temperature": self.cert_temperature, "case_timeout": self.case_timeout,
             "prove_rounds": self.prove_rounds, "llm_deps": self.llm_deps, "baseline": self.baseline,
@@ -163,7 +175,8 @@ class RunConfig:
             prove_target=prove_target,
             max_cert_loops=max_loops,
             max_compile_repair_loops=getattr(args, "max_compile_repair_loops", 2),
-            repair_driver=getattr(args, "repair_driver", "deterministic"),
+            repair_driver=getattr(args, "repair_driver", None) or "deterministic",
+            gen_driver=getattr(args, "gen_driver", None) or "deterministic",
             temperature=0.0 if baseline else getattr(args, "temperature", 0.0),
             cert_temperature=getattr(args, "cert_temperature", 0.4),
             case_timeout=getattr(args, "case_timeout", 10.0),

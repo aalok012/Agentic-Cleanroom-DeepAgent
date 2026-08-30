@@ -157,7 +157,11 @@ class DafnyAgent:
     """Generate verified Dafny modules from spec contracts, one per feature."""
 
     def __init__(self, project_dir: Path | str, llm=None, model: str = DAFNY_MODEL,
-                 max_rounds: int = 6, prompt_strategy: str = "baseline") -> None:
+                 max_rounds: int = 6, prompt_strategy: str = "baseline",
+                 gen_driver: str = "deterministic") -> None:
+        # 'deepagent' routes generate_feature() through agents/deep/generation.py, where the
+        # agent calls the Dafny verifier itself instead of us running a fixed round loop.
+        self.gen_driver = gen_driver
         self.project_dir = Path(project_dir)
         self.dafny_dir = self.project_dir / "dafny"
         self.model = model
@@ -238,6 +242,8 @@ class DafnyAgent:
     def generate_feature(self, ir: dict, feature_id: str) -> FeatureDafny:
         mod = _mod_name(feature_id)
         target = self.dafny_dir / f"{mod}.dfy"
+        if getattr(self, "gen_driver", "deterministic") == "deepagent":
+            return self._generate_feature_deep(ir, feature_id, mod, target)
         messages = [SystemMessage(self._system), HumanMessage(self._feature_prompt(ir, feature_id, mod))]
 
         last = FeatureDafny(feature_id=feature_id, module=mod, dafny_source="", verified=False)
@@ -263,6 +269,41 @@ class DafnyAgent:
                 f"{_out_instr} Do not repeat "
                 "`requires Inv(m)` on refining Apply/StepPreservesInv."))
         return last
+
+    def _generate_feature_deep(self, ir: dict, feature_id: str, mod: str, target: Path) -> FeatureDafny:
+        """deepagents counterpart to :meth:`generate_feature`.
+
+        The agent gets a ``dafny_verify`` tool and decides when to iterate, instead of us
+        running ``max_rounds`` fixed rounds. Handing it the verifier is NOT a clean-room
+        break: Dafny checks the agent's own proof text against its own specification, whereas
+        the test suite — the oracle the pipeline scores against — stays outside every agent.
+        """
+        from src.cleanroom.agents.deep.generation import deep_generate_dafny  # noqa: PLC0415
+
+        contracts = [c for c in ((ir.get("planning") or {}).get("contracts") or [])
+                     if str(c.get("feature_id")) == str(feature_id)]
+
+        def verifier(source: str) -> tuple[bool, str]:
+            """Write a draft and run the real Dafny verifier over it."""
+            target.write_text(source)
+            res = verify_dafny(target)
+            return res.ok, "\n".join(res.messages or [])
+
+        out, metrics = deep_generate_dafny(
+            ir, feature_id, contracts, verifier=verifier, model=self.model)
+
+        code = out.get("source") or ""
+        if not code.strip():
+            return FeatureDafny(feature_id=feature_id, module=mod, dafny_source="",
+                                verified=False, rounds=metrics.get("verify_calls", 0),
+                                residual_errors=["the proof agent produced no Dafny source"])
+        # Re-verify the SUBMITTED source: the agent may have submitted something other than
+        # the last text it verified, so the recorded verdict must come from this final check.
+        target.write_text(code)
+        res = verify_dafny(target)
+        return FeatureDafny(feature_id=feature_id, module=mod, dafny_source=code,
+                            verified=res.ok, rounds=metrics.get("verify_calls", 0) + 1,
+                            residual_errors=res.messages)
 
     def generate(self, ir: dict) -> GeneratedDafny:
         feature_ids = sorted({c["feature_id"] for c in (ir.get("planning") or {}).get("contracts", [])})
