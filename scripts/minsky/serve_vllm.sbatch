@@ -20,7 +20,30 @@
 # ─────────────────────────────────────────────────────────────────────────────
 set -euo pipefail
 
-REPO_DIR="${REPO_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}"
+# Slurm COPIES the batch script into its spool directory before running it, so
+# `dirname $BASH_SOURCE` points at /var/spool/slurmd/job<N>/ — not at the repo. Resolve the
+# script directory from the submit directory instead, and fall back to $BASH_SOURCE for the
+# case where this file is executed directly rather than through sbatch.
+find_conf() {
+  local candidates=(
+    "${CLEANROOM_MINSKY_DIR:-}"
+    "${SLURM_SUBMIT_DIR:-}/scripts/minsky"
+    "${SLURM_SUBMIT_DIR:-}"
+    "$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd)"
+  )
+  for dir in "${candidates[@]}"; do
+    [ -n "$dir" ] && [ -f "$dir/models.conf" ] && { echo "$dir"; return 0; }
+  done
+  return 1
+}
+
+REPO_DIR="${REPO_DIR:-$(find_conf)}" || {
+  echo "ERROR: cannot locate models.conf."
+  echo "  Submit from the repo root (so SLURM_SUBMIT_DIR points at it), or set"
+  echo "  CLEANROOM_MINSKY_DIR=/path/to/scripts/minsky in --export."
+  echo "  Looked in: \$CLEANROOM_MINSKY_DIR, \$SLURM_SUBMIT_DIR{,/scripts/minsky}"
+  exit 1
+}
 . "$REPO_DIR/models.conf"
 
 MODEL_KEY="${MODEL_KEY:?set MODEL_KEY=qwen-coder|r1-distill}"

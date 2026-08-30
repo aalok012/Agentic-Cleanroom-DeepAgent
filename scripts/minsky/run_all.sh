@@ -23,7 +23,12 @@ command -v uv >/dev/null || { echo "ERROR: uv not found. Install it once with:";
   echo "    curl -LsSf https://astral.sh/uv/install.sh | sh"; exit 1; }
 
 echo "── submitting vLLM job (MODEL_KEY=$MODEL_KEY)"
-JOB=$(sbatch --parsable --export=ALL,MODEL_KEY="$MODEL_KEY" scripts/minsky/serve_vllm.sbatch)
+# CLEANROOM_MINSKY_DIR is exported so the job can find models.conf regardless of where
+# Slurm stages the script (it copies it into /var/spool/slurmd/job<N>/).
+MINSKY_DIR="$(cd "$(dirname "$0")" && pwd)"
+JOB=$(sbatch --parsable \
+  --export=ALL,MODEL_KEY="$MODEL_KEY",CLEANROOM_MINSKY_DIR="$MINSKY_DIR" \
+  "$MINSKY_DIR/serve_vllm.sbatch")
 echo "   job $JOB"
 
 cleanup() {

@@ -45,3 +45,4 @@ scores zero regardless of how correct its logic is.
 
 Check preconditions first, then do the work. Validation that happens halfway through leaves
 partial state behind, which turns one failing requirement into several.
+
