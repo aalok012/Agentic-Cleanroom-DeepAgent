@@ -501,7 +501,7 @@ def run(srs_path: Path, output_dir: Path, cfg: RunConfig) -> tuple[dict, dict]:
         elif language == "javascript":
             metrics["code"]["language"] = "JavaScript"   # code_stats labels by Python AST; override
         if stack == "fastapi":
-            app_dir = build_runnable_package(ir["generated_code"], code_dir)
+            app_dir = build_runnable_package(ir["generated_code"], code_dir, ir=ir)
             metrics["code"]["runnable_app"] = str(app_dir)
             if adapter_mode and proj is not None:
                 staged = code_agent.target.stage_cores(

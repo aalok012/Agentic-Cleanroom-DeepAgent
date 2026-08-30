@@ -48,7 +48,11 @@ Run with:  uvicorn app:create_app --factory   (or: python -m app)
 import importlib
 import pkgutil
 
+from pathlib import Path
+
 from fastapi import APIRouter, FastAPI
+from fastapi.responses import FileResponse, RedirectResponse
+from fastapi.staticfiles import StaticFiles
 
 from app.extensions import Base, engine
 
@@ -76,6 +80,20 @@ def create_app() -> FastAPI:
                 registered_ids.add(id(value))
                 prefix = f"/{layer}/{info.name}"
                 app.include_router(value, prefix=prefix, tags=[info.name])
+
+    # Manual test console, written by the pipeline's ui_packager from the planner's
+    # contracts. Optional: the app runs identically when static/ is absent.
+    static = Path(__file__).parent / "static"
+    if (static / "index.html").exists():
+        app.mount("/static", StaticFiles(directory=str(static)), name="static")
+
+        @app.get("/", include_in_schema=False)
+        def _console() -> FileResponse:
+            return FileResponse(str(static / "index.html"))
+    else:
+        @app.get("/", include_in_schema=False)
+        def _docs() -> RedirectResponse:
+            return RedirectResponse("/docs")
 
     Base.metadata.create_all(bind=engine)
     return app
@@ -617,8 +635,12 @@ def _stub_undefined_model_imports(
     return rewritten, stub_module
 
 
-def build_runnable_package(generated_code: dict, out_dir: Path) -> Path:
-    """Assemble generated_code into out_dir/app/ as a runnable FastAPI package. Returns the app dir."""
+def build_runnable_package(generated_code: dict, out_dir: Path, ir: dict | None = None) -> Path:
+    """Assemble generated_code into out_dir/app/ as a runnable FastAPI package. Returns the app dir.
+
+    When ``ir`` is given, also writes the manual test console (``app/static/index.html``) from
+    the planner's contracts — a debugging aid, never an input to any agent.
+    """
     from src.cleanroom.utils.code_stats import code_stats
 
     files = _dedupe_models(_collect(generated_code))
@@ -652,6 +674,11 @@ def build_runnable_package(generated_code: dict, out_dir: Path) -> Path:
     third_party = code_stats(generated_code)["third_party_libraries"]
     deps = sorted({d for d in third_party if d not in ignore} | {"fastapi", "uvicorn", "sqlalchemy"})
     (out_dir / "requirements.txt").write_text("\n".join(deps) + "\n")
+    if ir is not None:
+        from src.cleanroom.utils.ui_packager import build_ui
+
+        build_ui(ir, app)
+
     return app
 
 

@@ -253,7 +253,7 @@ class RecoveryLoop:
         if self.stack != "fastapi":
             CodeAgent.write_files(GeneratedCode(**self.ir["generated_code"]), self.code_dir)
             return
-        app_dir = build_runnable_package(self.ir["generated_code"], self.code_dir)
+        app_dir = build_runnable_package(self.ir["generated_code"], self.code_dir, ir=self.ir)
         if self.adapter_mode and self.proj and self.proved_feature_ids:
             stage_dafny_cores(Path(app_dir), self.proj, self._proved_module_list())
 
