@@ -296,7 +296,9 @@ class DafnyAgent:
         if not code.strip():
             return FeatureDafny(feature_id=feature_id, module=mod, dafny_source="",
                                 verified=False, rounds=metrics.get("verify_calls", 0),
-                                residual_errors=["the proof agent produced no Dafny source"])
+                                residual_errors=[{
+                                    "line": 0, "col": 0,
+                                    "message": "the proof agent produced no Dafny source"}])
         # Re-verify the SUBMITTED source: the agent may have submitted something other than
         # the last text it verified, so the recorded verdict must come from this final check.
         target.write_text(code)

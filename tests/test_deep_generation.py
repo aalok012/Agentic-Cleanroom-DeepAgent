@@ -309,3 +309,26 @@ def test_deterministic_remains_the_default():
     assert RunConfig().gen_driver == "deterministic"
     assert RunConfig().uses_deep_generation() is False
     assert CodeAgent(llm=object()).gen_driver == "deterministic"
+
+
+def test_empty_proof_returns_a_well_formed_feature(monkeypatch, tmp_path):
+    """A proof agent that produces nothing must still return a valid FeatureDafny.
+
+    `residual_errors` is list[dict] ({line, col, message}) — passing a bare string raised a
+    pydantic ValidationError that killed the whole run instead of recording an empty proof.
+    """
+    from src.cleanroom.agents.dafny import agent as dafny_mod
+
+    monkeypatch.setattr(
+        "src.cleanroom.agents.deep.generation.deep_generate_dafny",
+        lambda *a, **kw: ({"feature_id": "1", "module": "F1", "source": "  "},
+                          {"verify_calls": 0}))
+
+    agent = dafny_mod.DafnyAgent.__new__(dafny_mod.DafnyAgent)   # skip __init__ scaffolding
+    agent.gen_driver = "deepagent"
+    agent.model = "test"
+    out = agent._generate_feature_deep({}, "1", "F1", tmp_path / "F1.dfy")
+
+    assert out.verified is False and out.dafny_source == ""
+    assert out.residual_errors == [
+        {"line": 0, "col": 0, "message": "the proof agent produced no Dafny source"}]
