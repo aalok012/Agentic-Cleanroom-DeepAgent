@@ -108,7 +108,9 @@ for srs in "${SRS_LIST[@]}"; do
 
     log "RUN  $stem / $arm"
     start=$SECONDS
-    timeout "$RUN_TIMEOUT" uv run python run_pipeline.py "$srs" \
+    # PYTHONUNBUFFERED: without it Python buffers stdout when it is not a tty, so run.log
+    # stays EMPTY until the process exits — you cannot tell a working run from a hung one.
+    PYTHONUNBUFFERED=1 timeout "$RUN_TIMEOUT" uv run python run_pipeline.py "$srs" \
       --language "$LANGUAGE" --prompt-strategy "$STRATEGY" \
       "${flags[@]}" --output-dir "$out" > "$out/run.log" 2>&1
     rc=$?
