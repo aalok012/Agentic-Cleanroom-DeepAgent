@@ -31,7 +31,7 @@ from src.cleanroom.agents.planning.schema.plan import Contract, PlanningOutput
 from src.cleanroom.agents.spec_agent.schema.ir import BehavioralContract
 from src.cleanroom.utils.ir import feature_id_of, normalize_ir_features, requirement_text
 from src.cleanroom.utils.llm_client import get_llm
-from src.cleanroom.utils.prompt_renderer import PromptRenderer, cot_template
+from src.cleanroom.utils.prompt_renderer import PromptRenderer
 
 # Directory each MVC layer's files live under. The planning agent's `submit_fr_plan` tool is the
 # classifier (Literal-typed `mvc_layer`, rejected back to the agent when invalid); there is no
@@ -193,7 +193,7 @@ def _infer_return_type(signature: str) -> str | None:
 
 
 class PlanningAgent:
-    def __init__(self, llm=None, stack: str = "python", prompt_strategy: str = "baseline") -> None:
+    def __init__(self, llm=None, stack: str = "python") -> None:
         # _design_feature always runs through the deepagents driver (see agents/deep/planning.py):
         # the agent reads each FR's spec sheet and submits FRs ONE AT A TIME through
         # `submit_fr_plan`, so a rejected field comes back as a tool error naming that one FR
@@ -204,8 +204,6 @@ class PlanningAgent:
         # use it (the deep driver builds its own agent); the other LLM steps in plan() do.
         self.llm = llm if llm is not None else get_llm()
         self.renderer = PromptRenderer()
-        # 'baseline' = original prompt; 'cot' = the parallel reason-first variant.
-        self.prompt_strategy = prompt_strategy
         # Target stack for the run (e.g. "fastapi"). Threaded into the design prompt so
         # signatures/layers come out shaped for that stack. The stack lives in the run,
         # not hardcoded in the prompt prose, so other profiles can be added later.

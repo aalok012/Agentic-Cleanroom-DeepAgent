@@ -23,7 +23,6 @@ MODEL_KEY="${MODEL_KEY:-qwen-coder}"
 # agent-driven — the deterministic generation arm was removed, so `--gen-driver` no longer
 # exists and passing it would abort every run with an argparse error.
 ARMS="${ARMS:-deterministic deepagent}"
-STRATEGY="${STRATEGY:-mot}"
 LANGUAGE="${LANGUAGE:-python}"
 RUN_TIMEOUT="${RUN_TIMEOUT:-4200}"      # 70 min per run
 PIPELINE_FLAGS="${PIPELINE_FLAGS:---prove --certify}"
@@ -114,7 +113,7 @@ for srs in "${SRS_LIST[@]}"; do
     # PYTHONUNBUFFERED: without it Python buffers stdout when it is not a tty, so run.log
     # stays EMPTY until the process exits — you cannot tell a working run from a hung one.
     PYTHONUNBUFFERED=1 timeout "$RUN_TIMEOUT" uv run python run_pipeline.py "$srs" \
-      --language "$LANGUAGE" --prompt-strategy "$STRATEGY" \
+      --language "$LANGUAGE" \
       "${flags[@]}" --output-dir "$out" > "$out/run.log" 2>&1
     rc=$?
     elapsed=$((SECONDS - start))

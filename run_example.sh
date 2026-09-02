@@ -21,7 +21,6 @@ cd "$(dirname "$0")"
 SRS="${SRS:-data/srs/Human.xml}"          # smallest subject (2 FRs) → fast demo
 MODEL="${MODEL:-Qwen/Qwen2.5-Coder-32B-Instruct-AWQ}"  # must match your endpoint's /v1/models
 LANG="${LANG:-python}"                     # python | java | javascript
-STRATEGY="${STRATEGY:-mot}"                # baseline | cot | mot
 OUT="${OUT:-outputs/example}"
 
 # ---- preflight --------------------------------------------------------------
@@ -39,7 +38,6 @@ echo " CLEANROOM-AGENT — single-example run"
 echo "   SRS        : $SRS"
 echo "   model      : $MODEL"
 echo "   language   : $LANG"
-echo "   strategy   : $STRATEGY"
 echo "   output dir : $OUT"
 echo "════════════════════════════════════════════════════════════════"
 
@@ -47,7 +45,6 @@ echo "════════════════════════�
 uv run python run_pipeline.py "$SRS" \
   --model "$MODEL" \
   --language "$LANG" \
-  --prompt-strategy "$STRATEGY" \
   --prove --certify \
   --output-dir "$OUT"
 

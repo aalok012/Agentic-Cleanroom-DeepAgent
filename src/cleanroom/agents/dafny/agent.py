@@ -45,18 +45,17 @@ class DafnyAgent:
     """Generate verified Dafny modules from spec contracts, one per feature."""
 
     def __init__(self, project_dir: Path | str, llm=None, model: str = DAFNY_MODEL,
-                 max_rounds: int = 6, prompt_strategy: str = "baseline") -> None:
+                 max_rounds: int = 6) -> None:
         # generate_feature() always runs through agents/deep/generation.py, where the agent
         # calls the Dafny verifier itself and decides when to iterate, instead of us running a
         # fixed round loop.
         self.project_dir = Path(project_dir)
         self.dafny_dir = self.project_dir / "dafny"
         self.model = model
-        # `max_rounds` and `prompt_strategy` are accepted for caller compatibility but no longer
-        # steer generation: the agent owns its own briefing (deep.generation.PROOF_PROMPT) and its
-        # own iteration budget (a LangGraph step cap, tuned with CLEANROOM_DEEP_MAX_STEPS).
+        # `max_rounds` is accepted for caller compatibility but no longer steers generation: the
+        # agent owns its own briefing (deep.generation.PROOF_PROMPT) and its own iteration budget
+        # (a LangGraph step cap, tuned with CLEANROOM_DEEP_MAX_STEPS).
         self.max_rounds = max_rounds
-        self.prompt_strategy = prompt_strategy
         self.llm = llm or get_llm(model=model, temperature=0.0)
         # Per-feature proof cache: lets the (otherwise monolithic) proof tier survive a mid-run
         # crash/blip — already-proved features are reloaded instead of re-proved on the next run.

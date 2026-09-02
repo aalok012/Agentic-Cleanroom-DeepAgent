@@ -47,7 +47,6 @@ class CertificationAgent:
         skip_feature_ids: set[str] | None = None,
         dafny_proj: "Path | None" = None,
         dafny_modules: list[str] | None = None,
-        prompt_strategy: str = "baseline",
     ) -> None:
         self.n = max(1, n)
         # Features already PROVED by the Dafny tier — certified by proof, so excluded from pass@k.
@@ -66,9 +65,6 @@ class CertificationAgent:
         self.target = get_target(language, stack)
         self.use_pipeline_sample = use_pipeline_sample
         self.case_timeout = case_timeout
-        # Strategy for the code/test samples this stage generates (pass@k diversity + on-the-fly
-        # tests) — must match the run's prompt strategy so cert samples use the same prompts.
-        self.prompt_strategy = prompt_strategy
 
     def certify(self, ir: dict) -> CertificationResult:
         if not (ir.get("planning") or {}).get("contracts"):
@@ -77,7 +73,7 @@ class CertificationAgent:
         normalize_ir_features(ir)
         PlanningAgent.normalize_ir_planning(ir)
         tests = ir.get("generated_tests") or TestAgent(
-            stack=self.stack, language=self.language, prompt_strategy=self.prompt_strategy
+            stack=self.stack, language=self.language
         ).generate(ir).model_dump()
         normalize_generated_tests(tests)
         cases_by_fr = self._cases_by_fr(tests)
@@ -178,8 +174,7 @@ class CertificationAgent:
         return result
 
     def _collect_samples(self, ir: dict) -> list[GeneratedCode]:
-        code_agent = CodeAgent(llm=self.code_llm, stack=self.stack, language=self.language,
-                               prompt_strategy=self.prompt_strategy)
+        code_agent = CodeAgent(llm=self.code_llm, stack=self.stack, language=self.language)
         samples: list[GeneratedCode] = []
 
         if self.use_pipeline_sample and ir.get("generated_code"):

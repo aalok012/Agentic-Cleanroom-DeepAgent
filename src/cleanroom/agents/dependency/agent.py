@@ -35,7 +35,7 @@ from src.cleanroom.agents.dependency.schema.graph import (
     FeatureFRDeps,
 )
 from src.cleanroom.utils.ir import feature_id_of, normalize_ir_features, requirement_text
-from src.cleanroom.utils.prompt_renderer import PromptRenderer, cot_template
+from src.cleanroom.utils.prompt_renderer import PromptRenderer
 
 # Matches explicit cross-references like "section 2.2.2" or "Section 2.5".
 SECTION_REF = re.compile(r"section\s+(\d+(?:\.\d+)*)", re.IGNORECASE)
@@ -106,7 +106,7 @@ def _numeric_key(id_str: str) -> tuple[tuple[int, int, str], ...]:
 
 
 class DependencyAnalyzer:
-    def __init__(self, llm=None, prompt_strategy: str = "baseline") -> None:
+    def __init__(self, llm=None) -> None:
         # The OUTER graph and the regex INNER edges are always deterministic. `llm` is
         # optional: when provided, the inner level ALSO runs a semantic pass that infers
         # FR->FR prerequisites the text implies but never states as a "section X" ref
@@ -114,8 +114,6 @@ class DependencyAnalyzer:
         # test request"). Left None, the agent is fully deterministic.
         self.llm = llm
         self.renderer = PromptRenderer() if llm is not None else None
-        # 'baseline' = original prompt; 'cot' = the parallel reason-first variant.
-        self.prompt_strategy = prompt_strategy
 
     # ------------------------------------------------------------------
     # OUTER: feature-level graph
@@ -243,7 +241,7 @@ class DependencyAnalyzer:
             return []
         requirements = [{"id": r["id"], "text": _strip_informational_refs(_req_text(r))} for r in frs]
         prompt = self.renderer.render(
-            cot_template("infer_fr_deps.j2", self.prompt_strategy),
+            "infer_fr_deps.j2",
             {"feature_name": feature.get("name", feature_id_of(feature)), "requirements": requirements},
         )
         result: FeatureFRDeps | None = self.llm.with_structured_output(FeatureFRDeps).invoke(prompt)

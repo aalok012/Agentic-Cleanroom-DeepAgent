@@ -31,7 +31,7 @@ from src.cleanroom.agents.spec_agent.schema.ir import (
 from src.cleanroom.agents.spec_agent.tools.srs_reader import SRSReader
 from src.cleanroom.utils.ir import feature_id_of, normalize_ir_features, requirement_text
 from src.cleanroom.utils.llm_client import get_llm
-from src.cleanroom.utils.prompt_renderer import PromptRenderer, cot_template
+from src.cleanroom.utils.prompt_renderer import PromptRenderer
 
 
 def _norm_id(raw: str) -> str:
@@ -40,14 +40,12 @@ def _norm_id(raw: str) -> str:
 
 
 class SpecAgent:
-    def __init__(self, llm=None, prompt_strategy: str = "baseline") -> None:
+    def __init__(self, llm=None) -> None:
         self.reader = SRSReader()
         # `llm` is injectable so tests/stubs avoid network calls. Resolved lazily: the
         # deterministic parse in run() never touches it; only synthesize_contracts() does.
         self._llm = llm
         self.renderer = PromptRenderer()
-        # 'baseline' = original prompt; 'cot' = the parallel reason-first variant.
-        self.prompt_strategy = prompt_strategy
 
     @property
     def llm(self):
@@ -150,7 +148,7 @@ class SpecAgent:
             {"id": r["id"], "text": requirement_text(r)} for r in frs
         ]
         prompt = self.renderer.render(
-            cot_template("write_contract.j2", self.prompt_strategy),
+            "write_contract.j2",
             {"feature_name": feature_name, "feature_id": feature_id, "requirements": requirements},
         )
         result: FeatureContractSet = self.llm.with_structured_output(FeatureContractSet).invoke(prompt)

@@ -79,10 +79,10 @@ Or call the pipeline directly:
 ```bash
 uv run python run_pipeline.py data/srs/Human.xml \
   --model Qwen/Qwen2.5-Coder-32B-Instruct-AWQ --language python \
-  --prompt-strategy mot --prove --certify
+  --prove --certify
 ```
 
-Key flags: `--language {python,java,javascript}`, `--prompt-strategy {baseline,cot,mot}`, `--prove` (proof track), `--certify` (pass@k track), `--model` (any id your endpoint serves). Artifacts, a run report, and per-run metrics JSON are written under `--output-dir` (default `outputs/`).
+Key flags: `--language {python,java,javascript}`, `--prove` (proof track), `--certify` (pass@k track), `--model` (any id your endpoint serves). Artifacts, a run report, and per-run metrics JSON are written under `--output-dir` (default `outputs/`).
 
 ### Repair driver (`--repair-driver`)
 
@@ -125,16 +125,17 @@ uv run python run_pipeline.py <srs> --model <model> --language <lang> --prove --
 uv run python run_baseline.py <srs> --model <model> --language <lang>
 ```
 
-**RQ2 — Prompting strategy on a cost-constrained model (DeepSeek).**
+**RQ2 — Prompting strategy on a cost-constrained model (DeepSeek).** *Retired — the arms can no
+longer be re-run.* Planning, code, test and proof are now agents that own their prompts in
+`agents/deep`, so `--prompt-strategy` and the `*_cot.j2` / `*_mot.j2` templates have been removed
+along with the two runner scripts. The recorded results stand and are still readable: the analysis
+scripts only walk archived run JSON and are unaffected.
 ```bash
-uv run python scripts/run_cot_experiment.py          # Chain-of-Thought arm
-uv run python scripts/run_mot_matrix_parallel.py     # Module-of-Thought arm
-uv run python scripts/compare_three_way.py           # ZS vs CoT vs MoT → results table
+uv run python scripts/compare_three_way.py           # ZS vs CoT vs MoT → results table (archived data)
 ```
+Re-opening this question means varying the reasoning strategy inside the deep prompts instead.
 
 **RQ3 — Overhead.** Token/time overhead per functional requirement is derived from the same `experiment_metrics.csv` (pipeline vs. baseline rows).
-
-The `--prompt-strategy` flag selects which prompt variant each stage uses: `baseline` (zero-shot), `cot` (`*_cot.j2`), or `mot` (`*_mot.j2`), resolved by [`src/cleanroom/utils/prompt_renderer.py`](src/cleanroom/utils/prompt_renderer.py).
 
 ---
 

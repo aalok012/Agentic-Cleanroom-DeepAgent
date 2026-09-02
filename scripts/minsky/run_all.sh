@@ -14,7 +14,6 @@ cd "$(dirname "$0")/../.."
 
 SRS="${1:-data/srs/Human.xml}"
 LANG_="${2:-python}"
-STRATEGY="${STRATEGY:-mot}"
 MODEL_KEY="${MODEL_KEY:-qwen-coder}"
 OUT="${OUT:-results/new_feature_2026-08-26/raw_results/$(date +%Y%m%d-%H%M%S)}"
 KEEP_SERVER="${KEEP_SERVER:-0}"    # 1 = leave the job running after the pipeline finishes
@@ -70,10 +69,10 @@ LLM_MODEL=${MODEL}
 LLM_API_KEY=EMPTY
 ENVEOF
 
-echo "── running pipeline: $SRS ($LANG_, $STRATEGY) → $OUT"
+echo "── running pipeline: $SRS ($LANG_) → $OUT"
 mkdir -p "$OUT"
 uv run python run_pipeline.py "$SRS" \
-  --language "$LANG_" --prompt-strategy "$STRATEGY" \
+  --language "$LANG_" \
   --prove --certify --output-dir "$OUT"
 
 echo "── done. Artifacts in $OUT"

@@ -254,8 +254,6 @@ def run(srs_path: Path, output_dir: Path, cfg: RunConfig) -> tuple[dict, dict]:
     on = cfg.agents_enabled()
     arm = " ".join(f"{name}={'on' if state else 'off'}" for name, state in on.items())
     print(f"  Agents: {arm}")
-    ps = cfg.prompt_strategy
-    print(f"  Prompt strategy: {ps}")
     if cfg.baseline:
         print("  [BASELINE preset] proof OFF · recovery OFF · regex-only deps · temperature 0")
 
@@ -288,7 +286,7 @@ def run(srs_path: Path, output_dir: Path, cfg: RunConfig) -> tuple[dict, dict]:
         print(f"  [skip — resumed] {ir.get('project_name')}: {len(ir['features'])} feature(s), "
               f"FR={n_fr}, stack={stack}")
     else:
-        spec = SpecAgent(llm=spec_llm, prompt_strategy=ps)
+        spec = SpecAgent(llm=spec_llm)
         # output_dir=None: skip the redundant <stem>_ir.json dump (subset of full_ir.json).
         ir_obj = _timed("spec_parse", stages, lambda: spec.run(srs_path, output_dir=None))
         ir = ir_obj.model_dump()
@@ -334,8 +332,7 @@ def run(srs_path: Path, output_dir: Path, cfg: RunConfig) -> tuple[dict, dict]:
         else:
             # cfg.llm_deps=False (e.g. --baseline) → deterministic regex-only edges.
             ir = _timed("dependency", stages,
-                        lambda: DependencyAnalyzer(llm=dep_llm if cfg.llm_deps else None,
-                                                   prompt_strategy=ps).enrich(ir, output_dir=output_dir))
+                        lambda: DependencyAnalyzer(llm=dep_llm if cfg.llm_deps else None).enrich(ir, output_dir=output_dir))
         graph = ir["dependency_graph"]
         print(f"Outer nodes : {len(graph['nodes'])}  edges: {len(graph['edges'])}")
         print(f"Build order : {' -> '.join(graph['build_order']) or '(none)'}")
@@ -350,7 +347,7 @@ def run(srs_path: Path, output_dir: Path, cfg: RunConfig) -> tuple[dict, dict]:
     if "planning" in done:
         print(f"  [skip — resumed] planning loaded: {len(ir['planning']['contracts'])} contract(s).")
     else:
-        ir = _timed("planning", stages, lambda: PlanningAgent(llm=plan_llm, stack=stack, prompt_strategy=ps).enrich(ir, output_dir=output_dir))
+        ir = _timed("planning", stages, lambda: PlanningAgent(llm=plan_llm, stack=stack).enrich(ir, output_dir=output_dir))
         contracts = ir["planning"]["contracts"]
         print(f"Contracts   : {len(contracts)}  (in dependency order)")
         for c in contracts[:12]:
@@ -403,8 +400,7 @@ def run(srs_path: Path, output_dir: Path, cfg: RunConfig) -> tuple[dict, dict]:
             project_dir = output_dir / "generated" / ir["project_name"] / "dafny_proof"
             proj = _timed("scaffold", stages, lambda: scaffold_dafny_project(project_dir))
             gen = _timed("dafny", stages,
-                         lambda: DafnyAgent(proj, model=cfg.proof_model, max_rounds=cfg.prove_rounds,
-                                            prompt_strategy=ps).generate(ir))
+                         lambda: DafnyAgent(proj, model=cfg.proof_model, max_rounds=cfg.prove_rounds).generate(ir))
             proved_feature_ids = {f.feature_id for f in gen.features if f.verified}
             proved_modules = {f.feature_id: f.module for f in gen.features if f.verified}
             proved_sources = {f.feature_id: f.dafny_source for f in gen.features if f.verified}
@@ -464,7 +460,7 @@ def run(srs_path: Path, output_dir: Path, cfg: RunConfig) -> tuple[dict, dict]:
     # --- Stage 4: Code (LLM) — adapters over proved cores + full code for the rest ----
     # code_agent / code_dir are defined unconditionally (the Test, compile-repair, cert and
     # recovery stages all reference them) even when the codegen itself is skipped on resume.
-    code_agent = CodeAgent(llm=code_llm, stack=stack, language=language, prompt_strategy=ps)
+    code_agent = CodeAgent(llm=code_llm, stack=stack, language=language)
     code_dir = output_dir / "generated" / ir["project_name"]
     if "code" in done:
         _banner("[4]", "Code Agent — [skip — resumed]")
@@ -538,7 +534,7 @@ def run(srs_path: Path, output_dir: Path, cfg: RunConfig) -> tuple[dict, dict]:
         _banner("[5]", "Test Agent — [skip — resumed]")
         generated_tests_dict = ir.get("generated_tests")
         if cfg.run_test:
-            test_agent_runner = TestAgent(llm=test_llm, stack=stack, language=language, prompt_strategy=ps)
+            test_agent_runner = TestAgent(llm=test_llm, stack=stack, language=language)
         print(f"  loaded {len((generated_tests_dict or {}).get('features', []))} tested "
               "feature(s) from checkpoint (test modules already on disk).")
     elif not cfg.run_test:
@@ -550,7 +546,7 @@ def run(srs_path: Path, output_dir: Path, cfg: RunConfig) -> tuple[dict, dict]:
         _checkpoint("test", ir)
     else:
         _banner("[5]", "Test Agent — deriving black-box tests from the spec")
-        test_agent_runner = TestAgent(llm=test_llm, stack=stack, language=language, prompt_strategy=ps)
+        test_agent_runner = TestAgent(llm=test_llm, stack=stack, language=language)
         generated_tests = _timed("test", stages, lambda: test_agent_runner.generate(ir))
         generated_tests_dict = generated_tests.model_dump()
         ir = {**ir, "generated_tests": generated_tests_dict}
@@ -654,7 +650,6 @@ def run(srs_path: Path, output_dir: Path, cfg: RunConfig) -> tuple[dict, dict]:
                 skip_feature_ids=cert_skip,
                 dafny_proj=proj if adapter_mode else None,
                 dafny_modules=[proved_modules[fid] for fid in sorted(adapter_feature_ids)] if adapter_mode else None,
-                prompt_strategy=ps,
             ).run(ir),
         )
         ir = {**ir, "certification": cert.model_dump()}
@@ -697,7 +692,6 @@ def run(srs_path: Path, output_dir: Path, cfg: RunConfig) -> tuple[dict, dict]:
                 prove_target=prove_target,
                 # Live per-iteration metrics, flushed each loop → survives an early stop.
                 iter_log=output_dir / f"{ir['project_name']}_recovery_iters.jsonl",
-                prompt_strategy=ps,
                 repair_driver=cfg.repair_driver,
             )
             recovery = _timed("recovery", stages, lambda: loop.run(cert))
@@ -1166,15 +1160,6 @@ def main() -> None:
     parser.add_argument("--llm-deps", action=argparse.BooleanOptionalAction, default=True,
                         help="Use the LLM to infer semantic FR→FR edges in the dependency stage "
                              "(--no-llm-deps = deterministic regex edges only).")
-    parser.add_argument("--prompt-strategy", default="baseline", choices=["baseline", "cot", "mot"],
-                        help="Which prompt set to use for every LLM stage: 'baseline' (default, the "
-                             "original prompts), 'cot' (parallel Chain-of-Thought variants that "
-                             "reason step-by-step before emitting the SAME structured output), or "
-                             "'mot' (Module-of-Thought: decompose into private helpers, implement, "
-                             "then compose the public entry — applied to Planning/Code/Test, with "
-                             "every other stage falling back to its CoT prompt). "
-                             "Only the prompt wording changes — schemas, parser, and isolation are "
-                             "untouched.")
     parser.add_argument("--baseline", action="store_true",
                         help="Control run: forces proof OFF, recovery OFF, regex-only dependencies, "
                              "and temperature 0 — a plain spec→code→test(→pass@k) baseline to A/B "
