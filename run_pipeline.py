@@ -1106,6 +1106,15 @@ def main() -> None:
                              "'deterministic' (default) = the fixed-round loops that produced the "
                              "recorded results; 'deepagent' = a LangChain deepagents agent plans and "
                              "re-checks on its own (needs the `deepagents` package).")
+    parser.add_argument("--full-toolset", action="store_true",
+                        help="EXPLORATORY ARM. Run every stage (spec, dependency, planning, "
+                             "code, test, proof) as a deepagents agent with the COMPLETE "
+                             "built-in toolset — write_todos, the filesystem tools and shell "
+                             "`execute` — on ONE shared on-disk backend. This DISABLES "
+                             "clean-room isolation (agents can read each other's artifacts) "
+                             "and gives the model an unsandboxed shell on the host, so results "
+                             "are not evidence for independent derivation. Writes a per-agent "
+                             "tool-call breakdown next to the run report.")
     parser.add_argument("--certify", action=argparse.BooleanOptionalAction, default=False,
                         help="Run the pass@k certification stage (--no-certify to skip; default off).")
     parser.add_argument("--samples", type=int, default=1,
@@ -1193,8 +1202,30 @@ def main() -> None:
     # On failure we still persist whatever partial metrics were collected (status="failed").
     metrics: dict | None = None
     cfg = RunConfig.from_args(args)
+
+    # EXPLORATORY: swap every generation seam onto the full-toolset agents before the run.
+    # Opt-in only — the clean-room drivers are untouched unless this flag is passed.
+    tool_log = None
+    if getattr(args, "full_toolset", False):
+        from src.cleanroom.experiments.install import install_full_toolset
+
+        backend_root = args.output_dir / "full_toolset_workspace"
+        tool_log = install_full_toolset(backend_root, model=cfg.code_model)
+        _banner("[!]", "FULL-TOOLSET ARM — clean-room isolation is OFF")
+        for note in tool_log.as_dict()["isolation"]:
+            print(f"  · {note}")
+        print(f"  Shared agent workspace: {backend_root}")
+
     try:
         ir, metrics = run(args.srs_path, args.output_dir, cfg)
+        if tool_log is not None:
+            from src.cleanroom.experiments.install import format_tool_table, write_tool_report
+
+            metrics["tool_calls"] = tool_log.as_dict()
+            tool_report = write_tool_report(tool_log, args.output_dir, args.srs_path.stem)
+            _banner("[T]", "Tool usage by agent")
+            print(format_tool_table(tool_log))
+            print(f"\n  Full breakdown: {tool_report}")
         ir = {**ir, "metrics": metrics}
         normalize_ir(ir)
 

@@ -43,7 +43,8 @@ def fake_llm(monkeypatch):
     """Install a scripted model as the project's LLM for the duration of a test."""
 
     def install(model):
-        for module in ("src.cleanroom.agents.deep.runtime",):
+        for module in ("src.cleanroom.agents.deep.runtime",
+                       "src.cleanroom.experiments.full_toolset"):
             monkeypatch.setattr(f"{module}.get_llm", lambda *a, **k: model)
         return model
 

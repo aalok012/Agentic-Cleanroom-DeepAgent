@@ -15,7 +15,10 @@ FR's spec-derived behavioral contract, producing a CONTRACT per FR:
 DETERMINISTIC-FIRST: ordering, ids, prerequisites, the layer->path mapping, and the whole
 docstring assembly are plain code. The LLM is used only for interpretation (signature
 naming, per-arg/return docs, layer choice). The LLM never assigns or invents ids. Token
-discipline: ONE structured call per feature (never the whole IR); via with_structured_output().
+discipline: ONE agent per feature (never the whole IR), which reads that feature's spec
+sheets and submits each FR through `submit_fr_plan` — see agents/deep/planning.py. The
+design of any single FR is still one generative call; what the agent adds is choosing what
+to read and getting a per-FR rejection it can act on.
 
 The planner runs ONCE globally and consumes the SPEC + behavioral contracts only — no code,
 no tests — preserving the isolation the later code/test agents depend on.
