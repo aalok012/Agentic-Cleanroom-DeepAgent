@@ -1,4 +1,4 @@
-"""Code Agent.
+"""Code Agent. (docstring)
 
 Generates MVC source code from the specification. Generation is driven by a deepagents
 agent (``agents/deep/generation.py``): one agent per FEATURE, briefed with that feature's

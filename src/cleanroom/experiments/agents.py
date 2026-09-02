@@ -145,11 +145,11 @@ def plan_feature(root: Path, feature_name: str, fr_order: list[str],
                 + (f"Still to plan: {', '.join(remaining)}." if remaining
                    else "All FRs planned — you are done."))
 
+    steps = full_toolset_max_steps() + 8 * len(fr_order)
     agent = build_full_agent(
         [submit_fr_plan],
-        PLANNING_PROMPT.format(spec_root=SPEC_DIR) + _SHELL_NOTE,
+        PLANNING_PROMPT.format(spec_root=SPEC_DIR, max_steps=steps) + _SHELL_NOTE,
         _backend_for(root), name="planning", model=model)
-    steps = full_toolset_max_steps() + 8 * len(fr_order)
     state, secs = invoke_full(
         agent,
         f"Feature: {feature_name}\nTarget stack: {stack}\n\nDesign the interface for these "
@@ -195,12 +195,12 @@ def generate_code(root: Path, ir: dict, contracts: list[dict], log: RunLog,
                 + (f"Still to implement: {', '.join(remaining)}." if remaining
                    else "All FRs implemented — you are done."))
 
+    steps = full_toolset_max_steps() + 10 * len(contracts)
     agent = build_full_agent(
         [submit_implementation],
         CODE_PROMPT.format(language=language, spec_root=SPEC_DIR, code_root=CODE_DIR,
-                           skills_block=_skills_block(skills)) + _SHELL_NOTE,
+                           skills_block=_skills_block(skills), max_steps=steps) + _SHELL_NOTE,
         _backend_for(root), name="code", model=model)
-    steps = full_toolset_max_steps() + 10 * len(contracts)
     state, secs = invoke_full(
         agent,
         f"Implement these {len(contracts)} functional requirement(s):\n"
@@ -284,12 +284,12 @@ def generate_tests(root: Path, ir: dict, feature_id: str, contracts: list[dict],
         source["src"] = test_source
         return f"Recorded the test source ({len(test_source.splitlines())} lines)."
 
+    steps = full_toolset_max_steps() + 10 * len(contracts)
     agent = build_full_agent(
         [submit_test_case, submit_test_source],
         TEST_PROMPT.format(language=language, spec_root=SPEC_DIR, test_root=TEST_DIR,
-                           skills_block=_skills_block(skills)) + _SHELL_NOTE,
+                           skills_block=_skills_block(skills), max_steps=steps) + _SHELL_NOTE,
         _backend_for(root), name="test", model=model)
-    steps = full_toolset_max_steps() + 10 * len(contracts)
     state, secs = invoke_full(
         agent,
         f"Write black-box tests for feature {feature_id}, covering these {len(contracts)} "
@@ -354,13 +354,13 @@ def generate_dafny(root: Path, ir: dict, feature_id: str, contracts: list[dict],
 
         tools.append(dafny_verify)
 
+    steps = full_toolset_max_steps() + 12 * len(contracts)
     agent = build_full_agent(
         tools,
         PROOF_PROMPT.format(spec_root=SPEC_DIR, proof_root=PROOF_DIR,
-                            verify_note=verify_note,
+                            verify_note=verify_note, max_steps=steps,
                             skills_block=_skills_block(skills)) + _SHELL_NOTE,
         _backend_for(root), name="proof", model=model)
-    steps = full_toolset_max_steps() + 12 * len(contracts)
     state, secs = invoke_full(
         agent,
         f"Specify and prove feature {feature_id} in Dafny module `{module}`, covering these "

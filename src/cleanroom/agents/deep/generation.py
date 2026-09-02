@@ -68,7 +68,7 @@ from src.cleanroom.agents.deep.runtime import (
     virtual_path,
 )
 from src.cleanroom.agents.test.schema.tests import FeatureTests, TestCase
-from src.cleanroom.utils.contracts import requirement_text
+from src.cleanroom.utils.contracts import prereq_ifaces, requirement_text
 
 
 class DeepGenerationIncomplete(RuntimeError):
@@ -82,12 +82,21 @@ class DeepGenerationIncomplete(RuntimeError):
 # Shared: the contract sheet every generator reads, and nothing else.
 # --------------------------------------------------------------------------------------
 
-def contract_sheet(contract: dict, requirement: str) -> str:
+def contract_sheet(contract: dict, requirement: str,
+                   prerequisites: list[dict] | None = None) -> str:
     """The read-only briefing for one FR — identical for all three generators.
 
     Deliberately identical: if Code, Test and Proof were briefed differently, a disagreement
     between their artifacts would be an artifact of the briefing rather than evidence about
-    independent derivation.
+    independent derivation. So ``prerequisites`` is added to ALL THREE or none — never to the
+    code agent alone, however tempting, because that would make an agreement between code and
+    tests partly an artifact of code having been told more.
+
+    ``prerequisites`` carries the SIGNATURES of the FRs this one depends on — never their
+    bodies, and taken from the planner's contracts rather than any generated artifact, so the
+    input stays purely spec-derived. Without it an FR that calls something another feature
+    creates has only the planner's docstring note ("Prerequisite: create_order (req 1.1)") and
+    must guess that function's parameters and return shape.
     """
     lines = [
         f"# FR {contract.get('fr_id')} (feature {contract.get('feature_id')})",
@@ -104,6 +113,13 @@ def contract_sheet(contract: dict, requirement: str) -> str:
         f"- layer: {contract.get('mvc_layer', '')}",
         f"- error mode: {contract.get('error_mode', 'raise')}",
     ]
+    if prerequisites:
+        lines += ["", "## Prerequisites — these run BEFORE this FR",
+                  "Their signatures only. Call them as written; do not reimplement them.", ""]
+        for p in prerequisites:
+            lines.append(f"- FR {p['fr_id']} ({p.get('layer', '')}): `{p.get('signature', '')}`")
+            if p.get("example_inputs_json"):
+                lines.append(f"    example inputs: `{p['example_inputs_json']}`")
     for label, key in (("Example inputs", "example_inputs_json"),
                        ("Expected return", "expected_return_json"),
                        ("Failure inputs (must fail)", "failure_inputs_json")):
@@ -120,13 +136,27 @@ def _requirement_index(ir: dict) -> dict[str, str]:
     return index
 
 
-def _seed_specs(contracts: list[dict], req_text: dict[str, str]) -> dict[str, str]:
-    """``/spec`` sheets for a set of contracts — the shared read-only input."""
+def _seed_specs(contracts: list[dict], req_text: dict[str, str],
+                by_fr: dict[str, dict] | None = None) -> dict[str, str]:
+    """``/spec`` sheets for a set of contracts — the shared read-only input.
+
+    ``by_fr`` indexes EVERY contract in the run, not just the ones being seeded: a
+    prerequisite often lives in another feature, and that is exactly the case the sheet needs
+    to cover. Only the prerequisite's signature crosses over, never its implementation.
+    """
+    by_fr = by_fr or {}
     return {
         virtual_path(SPEC_ROOT, i, f"{str(c.get('fr_id')).replace('.', '_')}.md"):
-            contract_sheet(c, req_text.get(c.get("fr_id"), ""))
+            contract_sheet(c, req_text.get(c.get("fr_id"), ""),
+                           prereq_ifaces(c, by_fr) if by_fr else None)
         for i, c in enumerate(contracts)
     }
+
+
+def _all_contracts(ir: dict) -> dict[str, dict]:
+    """``{fr_id: contract}`` over the WHOLE run, for prerequisite lookup."""
+    return {c["fr_id"]: c for c in ((ir.get("planning") or {}).get("contracts") or [])
+            if c.get("fr_id")}
 
 
 def _skills_block(skills: dict[str, str]) -> str:
@@ -180,6 +210,10 @@ finished until `submit_implementation` has accepted every FR. (`write_file` cann
 existing file — use `edit_file` to revise a draft.) Resubmitting an FR replaces its earlier
 submission, so fixing one is just another call.
 Start with `write_todos` listing the FRs, then read every contract sheet before writing.
+
+You have about {max_steps} tool calls for this whole feature. Reading every sheet first is
+worth it; re-reading one you have already read is not. If the budget runs short, submit what
+you have — an unsubmitted FR is a failed one, and a rough implementation beats nothing.
 """
 
 
@@ -201,7 +235,7 @@ def deep_generate_code(
         return [], {"skipped": "no contracts"}
 
     req_text = _requirement_index(ir)
-    seeds = _seed_specs(contracts, req_text)          # /spec — shared read-only input
+    seeds = _seed_specs(contracts, req_text, _all_contracts(ir))          # /spec — shared read-only input
     skills = load_skills(["clean-room-implementation"])
     seeds.update(skills)                              # /skills — authored guidance
     path_by_fr: dict[str, str] = {}
@@ -237,16 +271,17 @@ def deep_generate_code(
                 + (f"Still to implement: {', '.join(remaining)}." if remaining
                    else "All FRs implemented — you are done."))
 
+    # The budget is stated IN the prompt, so it has to exist before the prompt is built.
+    steps = max_steps or (deep_max_steps() + 10 * len(contracts))
     agent = build_agent(
         [submit_implementation],
         CODE_PROMPT.format(language=language, spec_root=SPEC_ROOT, code_root=CODE_ROOT,
-                           skills_block=_skills_block(skills)),
+                           skills_block=_skills_block(skills), max_steps=steps),
         temperature=temperature, model=model, name="code")
     listing = "\n".join(f"- FR {c['fr_id']} -> {path_by_fr[c['fr_id']]}" for c in contracts)
     opening = (f"Implement these {len(contracts)} functional requirement(s):\n{listing}\n\n"
                f"Their contract sheets are in {SPEC_ROOT}/.")
 
-    steps = max_steps or (deep_max_steps() + 10 * len(contracts))
     state = invoke_agent(agent, opening, seed_files(seeds), max_steps=steps)
 
     # Submitted content ONLY — the /code files the agent drafted into are a scratchpad and are
@@ -304,6 +339,14 @@ ONLY way to deliver the suite: a file left in {test_root}/ is NOT collected, and
 finished until both have been accepted. Cover every FR you were given — a case is required for
 each one.
 Start with `write_todos`, then read every contract sheet.
+
+Each `submit_test_case` call adds a NEW case — there is no way to withdraw one, so do not
+re-send a case that was already accepted; a corrected duplicate leaves BOTH in the suite and
+the stale one will fail against correct code. Get each case right before you send it.
+`submit_test_source` may be called again, and the last file wins.
+
+You have about {max_steps} tool calls for this feature. If the budget runs short, make sure
+every FR has at least one case and the source is submitted — a partial suite is rejected.
 """
 
 
@@ -322,7 +365,7 @@ def deep_generate_tests(
         return None, {"skipped": "no contracts"}
 
     req_text = _requirement_index(ir)
-    seeds = _seed_specs(contracts, req_text)          # /spec — same sheets the code agent got
+    seeds = _seed_specs(contracts, req_text, _all_contracts(ir))          # /spec — same sheets the code agent got
     skills = load_skills(["blackbox-testing"])
     seeds.update(skills)
     source_path = virtual_path(TEST_ROOT, 0, f"test_{str(feature_id).replace('.', '_')}.py")
@@ -374,17 +417,17 @@ def deep_generate_tests(
         source["src"] = test_source
         return f"Recorded the test source ({len(test_source.splitlines())} lines)."
 
+    steps = max_steps or (deep_max_steps() + 10 * len(contracts))
     agent = build_agent(
         [submit_test_case, submit_test_source],
         TEST_PROMPT.format(language=language, spec_root=SPEC_ROOT, test_root=TEST_ROOT,
-                           skills_block=_skills_block(skills)),
+                           skills_block=_skills_block(skills), max_steps=steps),
         temperature=temperature, model=model, name="test")
     listing = "\n".join(f"- FR {c['fr_id']}: {c.get('signature', '')}" for c in contracts)
     opening = (f"Write black-box tests for feature {feature_id}, covering these "
                f"{len(contracts)} functional requirement(s):\n{listing}\n\n"
                f"Their contract sheets are in {SPEC_ROOT}/. Write the file to {source_path}.")
 
-    steps = max_steps or (deep_max_steps() + 10 * len(contracts))
     state = invoke_agent(agent, opening, seed_files(seeds), max_steps=steps)
 
     # Submitted content ONLY — see "TOOL CALLING IS THE CONTRACT" in the module docstring.
@@ -432,8 +475,13 @@ Rules:
 Submit with `submit_dafny(module=..., source=...)` giving the COMPLETE module source. This
 tool call is the ONLY way to deliver the module: a draft left in {proof_root}/ is NOT collected,
 and you are not finished until it has been accepted. Submit even a proof that does not fully
-verify — an honest partial module is a result; silence is not.
+verify — an honest partial module is a result; silence is not. Resubmitting replaces your
+earlier module, so tightening a proof is just another call.
 Start with `write_todos` listing the FRs, then read every contract sheet.
+
+You have about {max_steps} tool calls for this feature, and `dafny_verify` spends them fast.
+Submit a working module BEFORE you run low, then keep improving it — an unsubmitted proof
+scores nothing, however good the draft.
 """
 
 _VERIFY_NOTE = ("* Call `dafny_verify(source=...)` to check a draft. Iterate until it verifies "
@@ -463,7 +511,7 @@ def deep_generate_dafny(
         return {}, {"skipped": "no contracts"}
 
     req_text = _requirement_index(ir)
-    seeds = _seed_specs(contracts, req_text)          # /spec — same sheets the others got
+    seeds = _seed_specs(contracts, req_text, _all_contracts(ir))          # /spec — same sheets the others got
     # The deterministic DafnyAgent inlines these two documents into every system prompt. The
     # deep path seeds them instead, so the agent pays for them only when it reads them.
     skills = load_skills(["dafny-proofs", "dafny-patterns"])
@@ -509,10 +557,12 @@ def deep_generate_dafny(
 
         tools.append(dafny_verify)
 
+    steps = max_steps or (deep_max_steps() + 12 * len(contracts))
     agent = build_agent(
         tools,
         PROOF_PROMPT.format(spec_root=SPEC_ROOT, proof_root=PROOF_ROOT,
-                            verify_note=verify_note, skills_block=_skills_block(skills)),
+                            verify_note=verify_note, skills_block=_skills_block(skills),
+                            max_steps=steps),
         temperature=temperature, model=model, name="proof")
     listing = "\n".join(f"- FR {c['fr_id']}: {c.get('signature', '')}" for c in contracts)
     opening = (f"Specify and prove feature {feature_id} in Dafny module `{module}`, covering "
@@ -520,7 +570,6 @@ def deep_generate_dafny(
                f"Their contract sheets are in {SPEC_ROOT}/. Draft at {draft_path} if it helps, "
                f"but deliver the module with submit_dafny.")
 
-    steps = max_steps or (deep_max_steps() + 12 * len(contracts))
     state = invoke_agent(agent, opening, seed_files(seeds), max_steps=steps)
 
     # Submitted content ONLY — see "TOOL CALLING IS THE CONTRACT" in the module docstring.

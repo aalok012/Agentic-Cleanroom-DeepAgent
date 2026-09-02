@@ -53,10 +53,11 @@ You are the planning agent for a clean-room software pipeline. You design the IN
 each functional requirement (FR) of one feature. You do not write implementations or tests.
 
 Your filesystem:
-* {spec_root}/ — one read-only spec sheet per FR: its requirement text and its behavioral
-  contract (preconditions, postconditions, error cases). READ THESE FIRST.
+* {spec_root}/ — one spec sheet per FR: its requirement text and its behavioral contract
+  (stimulus, precondition, response, postcondition). READ THESE FIRST — `ls {spec_root}/` to
+  see them, then `read_file` each one. Treat them as read-only; you have nothing to add there.
 
-For every FR you must call `submit_fr_plan` exactly once with:
+For every FR you must call `submit_fr_plan` with:
 * id                     — the FR id, copied VERBATIM from the spec sheet. Never invent one.
 * signature              — a one-line function signature in Python syntax (name, typed
                            params, return type). This is the canonical, language-neutral
@@ -79,7 +80,16 @@ Design rules:
 * Prefer the vocabulary of the requirement text over invented terms.
 
 Start with `write_todos` listing every FR id you must plan, then read each spec sheet, then
-submit them one at a time. Finish only when every FR has been accepted.
+submit them one at a time. Finish only when every FR has been ACCEPTED — the tool tells you
+which ids are still outstanding after each call.
+
+A rejection is not final. It names the field that was wrong; fix that one FR and call
+`submit_fr_plan` again. Resubmitting an id REPLACES its earlier plan, so you can also revise
+one you already got accepted. An FR you give up on is dropped from the design entirely, which
+is far worse than a rough plan.
+
+You have about {max_steps} tool calls for this feature. Reading every sheet first is worth it;
+re-reading one is not.
 """
 
 
@@ -159,16 +169,23 @@ def deep_design_feature(
                 + (f"Still to plan: {', '.join(remaining)}." if remaining
                    else "All FRs planned — you are done."))
 
-    agent = build_agent([submit_fr_plan], PROMPT.format(spec_root=SPEC_ROOT),
+    # The budget is stated IN the prompt, so it has to exist before the prompt is built.
+    steps = max_steps or (deep_max_steps() + 8 * len(fr_order))
+    agent = build_agent([submit_fr_plan],
+                        PROMPT.format(spec_root=SPEC_ROOT, max_steps=steps),
                         temperature=temperature, model=model, name="planning")
-    listing = "\n".join(f"- FR {rid}" for rid in fr_order)
+    # Name each sheet's exact path. virtual_path() prefixes an index (/spec/00_1_1.md), so an
+    # agent told only the directory must spend a turn on `ls` to learn what the driver already
+    # knows. The code agent lists its paths the same way.
+    sheet_of = {rid: virtual_path(SPEC_ROOT, i, f"{str(rid).replace('.', '_')}.md")
+                for i, rid in enumerate(fr_order)}
+    listing = "\n".join(f"- FR {rid} -> {sheet_of[rid]}" for rid in fr_order)
     opening = (
         f"Feature: {feature_name}\nTarget stack: {stack}\n\n"
         f"Design the interface for these {len(fr_order)} functional requirement(s):\n"
-        f"{listing}\n\nTheir spec sheets are in {SPEC_ROOT}/."
+        f"{listing}"
     )
 
-    steps = max_steps or (deep_max_steps() + 8 * len(fr_order))
     state = invoke_agent(agent, opening, seed_files(seeds), max_steps=steps)
 
     if not return_metrics:
@@ -212,6 +229,13 @@ def _param_mismatch(signature: str, plan: FRPlan) -> str:
         if unknown:
             return (f"example_inputs_json has key(s) {unknown} that are not parameters of the "
                     f"signature {params}.")
+    # The prompt states entity_identifier "must appear in example_inputs_json". Every rule
+    # beside it is enforced here, which made this one look enforced too — it was not, and the
+    # value flows on into the code agent's prompt as if the planner had vouched for it.
+    entity = (plan.entity_identifier or "").strip()
+    if entity and isinstance(example, dict) and example and entity not in example:
+        return (f"entity_identifier {entity!r} is not a key of example_inputs_json "
+                f"{sorted(example)}; it must name the field that uniquely keys the entity.")
     return ""
 
 

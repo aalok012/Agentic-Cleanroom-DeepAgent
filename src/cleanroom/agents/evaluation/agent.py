@@ -177,7 +177,7 @@ class CertificationAgent:
         code_agent = CodeAgent(llm=self.code_llm, stack=self.stack, language=self.language)
         samples: list[GeneratedCode] = []
 
-        if self.use_pipeline_sample and ir.get("generated_code"):
+        if self.use_pipeline_sample and ir.get("generated_code"): 
             samples.append(GeneratedCode(**ir["generated_code"]))
 
         need = self.n - len(samples)

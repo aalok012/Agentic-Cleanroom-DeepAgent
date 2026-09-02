@@ -408,3 +408,79 @@ def test_empty_proof_returns_a_well_formed_feature(monkeypatch, tmp_path):
     assert out.verified is False and out.dafny_source == ""
     assert out.residual_errors == [
         {"line": 0, "col": 0, "message": "the proof agent produced no Dafny source"}]
+
+
+# --- prompt hygiene: gaps found reviewing the agents against deepagents usage ---------
+def test_every_prompt_renders_in_both_arms():
+    """A new placeholder must be supplied everywhere the prompt is formatted.
+
+    Adding `{max_steps}` broke the exploratory arm silently — it formats the same prompt
+    strings with its own roots, and nothing in the suite rendered them, so a KeyError would
+    only have surfaced mid-run.
+    """
+    from src.cleanroom.agents.deep.generation import CODE_PROMPT, PROOF_PROMPT, TEST_PROMPT
+    from src.cleanroom.agents.deep.planning import PROMPT as PLANNING_PROMPT
+
+    CODE_PROMPT.format(language="Python", spec_root="/spec", code_root="/code",
+                       skills_block="", max_steps=90)
+    TEST_PROMPT.format(language="Python", spec_root="/spec", test_root="/tests",
+                       skills_block="", max_steps=90)
+    PROOF_PROMPT.format(spec_root="/spec", proof_root="/proof", verify_note="",
+                        skills_block="", max_steps=90)
+    PLANNING_PROMPT.format(spec_root="/spec", max_steps=90)
+
+
+def test_planning_prompt_does_not_forbid_resubmission():
+    """`submit_fr_plan` replaces on resubmit and every rejection says "resubmit", so a prompt
+    telling the agent to call it "exactly once" would make a rejection look terminal — and a
+    dropped FR falls back to a default contract."""
+    from src.cleanroom.agents.deep.planning import PROMPT
+
+    assert "exactly once" not in PROMPT
+    assert "REPLACES" in PROMPT or "replaces" in PROMPT
+
+
+def test_contract_sheet_carries_prerequisite_signatures():
+    """The single-call generator passed prereq_ifaces into its prompt; the deep path dropped
+    it, leaving an FR to guess the interface of something another feature creates."""
+    from src.cleanroom.agents.deep.generation import contract_sheet
+
+    sheet = contract_sheet(
+        dict(CONTRACT, fr_id="2.1", feature_id="2"),
+        "The system shall submit an order.",
+        [{"fr_id": "1.1", "layer": "model",
+          "signature": "def create_order(customer: str) -> dict",
+          "example_inputs_json": '{"customer": "c1"}'}])
+
+    assert "def create_order(customer: str) -> dict" in sheet
+    assert "FR 1.1" in sheet
+
+
+def test_all_three_generators_get_the_same_prerequisite_briefing():
+    """contract_sheet is deliberately identical across Code/Test/Proof. Giving prerequisites
+    to one alone would make an agreement between their artifacts partly an artifact of the
+    briefing rather than evidence of independent derivation."""
+    import inspect
+
+    from src.cleanroom.agents.deep import generation
+
+    src = inspect.getsource(generation)
+    assert src.count("_seed_specs(contracts, req_text, _all_contracts(ir))") == 3
+
+
+def test_entity_identifier_must_be_a_key_of_example_inputs():
+    """The prompt states this rule; until now nothing enforced it, and the value flows on into
+    the code agent's prompt as though the planner had vouched for it."""
+    from src.cleanroom.agents.deep.planning import _param_mismatch
+    from src.cleanroom.agents.planning.schema.plan import FRPlan
+
+    def plan(entity):
+        return FRPlan(id="1.1", signature="def add(name: str) -> dict", args=[], returns="",
+                      mvc_layer="model", example_inputs_json='{"name": "x"}',
+                      expected_return_json="{}", error_mode="raise", failure_inputs_json="",
+                      entity_identifier=entity)
+
+    sig = "def add(name: str) -> dict"
+    assert "entity_identifier" in _param_mismatch(sig, plan("not_a_field"))
+    assert _param_mismatch(sig, plan("name")) == ""
+    assert _param_mismatch(sig, plan("")) == "", "an empty entity_identifier is legitimate"
