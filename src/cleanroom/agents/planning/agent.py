@@ -33,8 +33,9 @@ from src.cleanroom.utils.ir import feature_id_of, normalize_ir_features, require
 from src.cleanroom.utils.llm_client import get_llm
 from src.cleanroom.utils.prompt_renderer import PromptRenderer, cot_template
 
-# Directory each MVC layer's files live under. The plan_feature.j2 prompt is the classifier
-# (Literal-typed `mvc_layer`); there is no keyword fallback — invalid output defaults to controller.
+# Directory each MVC layer's files live under. The planning agent's `submit_fr_plan` tool is the
+# classifier (Literal-typed `mvc_layer`, rejected back to the agent when invalid); there is no
+# keyword fallback — anything that still gets through defaults to controller.
 _LAYER_DIR = {"model": "models", "view": "views", "controller": "controllers"}
 
 
@@ -75,7 +76,8 @@ def _func_name(signature: str, fr_id: str) -> str:
 
 def _normalize_layer(raw: str) -> str:
     """Coerce the LLM's layer to model|view|controller; default to 'controller' if invalid.
-    The plan_feature.j2 prompt is the classifier — this only guards malformed output."""
+    `submit_fr_plan` is the classifier and rejects a bad layer back to the agent — this only
+    guards output that somehow survives that."""
     layer = (raw or "").strip().lower()
     return layer if layer in _LAYER_DIR else "controller"
 

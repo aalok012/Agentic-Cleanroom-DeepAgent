@@ -25,9 +25,6 @@ class SpringBootTarget(JavaTarget):
     file_ext = ".java"
     test_framework = "junit5-spring"
 
-    def code_template(self) -> str:
-        return "generate_code_spring.j2"
-
     def adapter_template(self) -> str:
         # Thin Spring @RestController glue over a feature PROVED in Dafny and translated to Java.
         return "generate_adapter_spring.j2"
@@ -39,9 +36,6 @@ class SpringBootTarget(JavaTarget):
         from src.cleanroom.utils.dafny_project import stage_dafny_cores_java
 
         return stage_dafny_cores_java(Path(code_dir), Path(project_dir), modules)
-
-    def test_template(self) -> str:
-        return "generate_tests_spring.j2"
 
     def oracle_name(self, stack: str) -> str:
         return "spring-build"

@@ -18,12 +18,6 @@ class JavaTarget(LanguageTarget):
     file_ext = ".java"
     test_framework = "junit5"
 
-    def code_template(self) -> str:
-        return "generate_code_java.j2"
-
-    def test_template(self) -> str:
-        return "generate_tests_junit.j2"
-
     def adapter_template(self) -> str:
         # Be explicit: don't silently fall back to the Python/FastAPI adapter prompt.
         raise NotImplementedError("Java Dafny-core adapter is not supported in v1 "

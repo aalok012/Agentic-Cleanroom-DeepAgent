@@ -16,9 +16,9 @@ class LanguageTarget:
     test_framework = "pytest"
 
     # --- which Jinja template each agent renders ---
-    def code_template(self) -> str:
-        return "generate_code.j2"
-
+    # Generation (code/test) has no template: those stages are agents that own their
+    # own prompts in agents/deep/generation.py. What is left is the adapter and the
+    # test-informed recovery regen, which are still single rendered calls.
     def adapter_template(self) -> str:
         """Thin glue over a PROVED Dafny core (FastAPI/Python path)."""
         return "generate_adapter.j2"
@@ -39,9 +39,6 @@ class LanguageTarget:
         from src.cleanroom.utils.dafny_project import stage_dafny_cores
 
         return stage_dafny_cores(Path(app_dir), Path(project_dir), modules)
-
-    def test_template(self) -> str:
-        return "generate_tests.j2"
 
     # --- certification ---
     def oracle_name(self, stack: str) -> str:

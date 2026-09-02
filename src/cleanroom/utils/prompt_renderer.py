@@ -10,10 +10,14 @@ def cot_template(template_name: str, prompt_strategy: str) -> str:
 
     - ``cot``  -> ``<base>_cot.j2`` when that variant exists on disk, else the base name.
     - ``mot``  -> ``<base>_mot.j2`` if present, else ``<base>_cot.j2`` if present, else the base
-      name. This is the ``_mot`` -> ``_cot`` -> baseline fallback chain: a stage only gets the
-      Module-of-Thought prompt when a ``_mot`` file was authored for it (Planning, Code, Test);
-      every other stage (Spec, Dependency, Dafny proof track, adapters, feedback, compile-repair)
-      transparently falls back to its CoT prompt, then to the original.
+      name. This is the ``_mot`` -> ``_cot`` -> baseline fallback chain.
+
+      NOTE: no ``_mot`` file exists any more. The three stages that had one — Planning, Code and
+      Test — are now agents that own their prompts in ``agents/deep``, and their templates were
+      deleted with the single-call generators. So ``mot`` currently resolves to ``_cot``
+      everywhere, and ``--prompt-strategy`` only reaches the stages still rendering a template:
+      Spec, Dependency, adapters, recovery feedback and compile-repair. Reasoning-strategy
+      variation for generation would now have to live in the deep prompts.
     - any other value (``baseline``, …) -> the base name unchanged (byte-for-byte identical path).
 
     Variants are parallel files resolved by the same rglob lookup as the originals; nothing is

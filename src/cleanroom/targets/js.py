@@ -23,12 +23,6 @@ class JsTarget(LanguageTarget):
     file_ext = ".js"
     test_framework = "jest"
 
-    def code_template(self) -> str:
-        return "generate_code_express.j2"
-
-    def test_template(self) -> str:
-        return "generate_tests_jest.j2"
-
     def adapter_template(self) -> str:
         raise NotImplementedError("JS Dafny-core adapter is not supported in v1 "
                                   "(adapter shipping is FastAPI-only).")
