@@ -1107,14 +1107,16 @@ def main() -> None:
                              "recorded results; 'deepagent' = a LangChain deepagents agent plans and "
                              "re-checks on its own (needs the `deepagents` package).")
     parser.add_argument("--full-toolset", action="store_true",
-                        help="EXPLORATORY ARM. Run every stage (spec, dependency, planning, "
-                             "code, test, proof) as a deepagents agent with the COMPLETE "
+                        help="EXPLORATORY ARM. Run the four GENERATION stages (planning, "
+                             "code, test, proof) as deepagents agents with the COMPLETE "
                              "built-in toolset — write_todos, the filesystem tools and shell "
                              "`execute` — on ONE shared on-disk backend. This DISABLES "
                              "clean-room isolation (agents can read each other's artifacts) "
                              "and gives the model an unsandboxed shell on the host, so results "
-                             "are not evidence for independent derivation. Writes a per-agent "
-                             "tool-call breakdown next to the run report.")
+                             "are not evidence for independent derivation. Spec and dependency "
+                             "are unaffected: both are deterministic-first stages around one "
+                             "narrow call, so they run identically in either arm. Writes a "
+                             "per-agent tool-call breakdown next to the run report.")
     parser.add_argument("--certify", action=argparse.BooleanOptionalAction, default=False,
                         help="Run the pass@k certification stage (--no-certify to skip; default off).")
     parser.add_argument("--samples", type=int, default=1,

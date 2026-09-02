@@ -1,7 +1,7 @@
 """Substitute the full-toolset agents into the existing pipeline.
 
 Rather than fork ``run_pipeline`` (1200 lines of stage orchestration, checkpointing, packaging
-and metrics), this swaps the SIX generation seams and lets the rest of the pipeline run
+and metrics), this swaps the FOUR generation seams and lets the rest of the pipeline run
 untouched. Two things follow from that, both wanted:
 
   * every metric the pipeline already computes — verification_pass_ratio, PassVer@1,
@@ -9,14 +9,18 @@ untouched. Two things follow from that, both wanted:
     run is directly comparable to a clean-room run rather than merely similar;
   * the arm is a decorator over the pipeline, so it cannot drift out of sync with it.
 
-The six seams:
+The four seams:
 
-    SpecAgent._contract_feature                     (single-shot -> agent, NEW)
-    DependencyAnalyzer._infer_semantic_edges        (single-shot -> agent, NEW)
     deep.planning.deep_design_feature               (agent -> agent, disk backend + shell)
     deep.generation.deep_generate_code                       "
     deep.generation.deep_generate_tests                      "
     deep.generation.deep_generate_dafny                      "
+
+Spec and Dependency are NOT swapped. They are deterministic-first stages — the SRS parse and
+the regex/topological dependency resolution use no model at all — around one narrow
+interpretive call each. An agent loop there would add cost and nondeterminism to a stage that
+is mostly not a model problem, so they run identically in both arms and stay out of the
+comparison.
 
 Patching, not editing, is deliberate: the clean-room drivers keep their StateBackend and stay
 the default, and ``tests/test_isolation.py`` keeps guarding them. Nothing here runs unless a
@@ -34,7 +38,7 @@ from src.cleanroom.experiments.full_toolset import RunLog
 
 def install_full_toolset(root: Path, log: RunLog | None = None, *,
                          model: str | None = None) -> RunLog:
-    """Point every generation seam at the full-toolset agents. Returns the shared RunLog.
+    """Point the four generation seams at the full-toolset agents. Returns the shared RunLog.
 
     ``root`` is the shared on-disk backend directory — ONE for the whole run, which is what
     removes isolation: every agent reads and writes the same tree.
@@ -42,28 +46,6 @@ def install_full_toolset(root: Path, log: RunLog | None = None, *,
     log = log or RunLog()
     root = Path(root)
     root.mkdir(parents=True, exist_ok=True)
-
-    # --- Stage 1: spec contracts -----------------------------------------------------
-    from src.cleanroom.agents.spec_agent import agent as spec_mod
-
-    def _contract_feature(self, feature_name, feature_id, frs):
-        return full.spec_contracts(root, feature_name, feature_id, frs, log, model=model)
-
-    spec_mod.SpecAgent._contract_feature = _contract_feature
-
-    # --- Stage 2: semantic FR edges --------------------------------------------------
-    from src.cleanroom.agents.dependency import agent as dep_mod
-    from src.cleanroom.utils.ir import feature_id_of
-
-    def _infer_semantic_edges(self, feature, within):
-        frs = feature.get("functional_requirements", []) or []
-        edges = full.dependency_edges(
-            root, feature.get("name", ""), feature_id_of(feature), frs, log, model=model)
-        # The caller trusts its own `within` set; keep that contract exactly as the
-        # deterministic path does so an agent cannot inject a cross-feature edge.
-        return [(s, t) for s, t in edges if s in within and t in within and s != t]
-
-    dep_mod.DependencyAnalyzer._infer_semantic_edges = _infer_semantic_edges
 
     # --- Stage 3: planning -----------------------------------------------------------
     from src.cleanroom.agents.deep import planning as planning_mod

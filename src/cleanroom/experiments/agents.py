@@ -1,9 +1,14 @@
-"""The six pipeline stages as full-toolset deep agents.
+"""The four GENERATION stages as full-toolset deep agents.
 
-Spec and Dependency are converted here for the first time — in the clean-room arm they are
-still single ``with_structured_output`` calls. Planning, Code, Test and Proof already run as
-agents there; what changes for them in this arm is the backend (real disk, shared) and the
-toolset (shell ``execute`` added), not the prompt.
+Planning, Code, Test and Proof. What changes for them in this arm is the backend (real disk,
+shared) and the toolset (shell ``execute`` added), not the prompt.
+
+Spec and Dependency are deliberately NOT here. Both are deterministic-first stages — the SRS
+parse and the regex/topological dependency resolution involve no model at all — wrapped around
+one narrow interpretive call each (a behavioral contract; a semantic FR edge). Handing those a
+planning loop, a filesystem and a shell buys nothing they need and adds cost and nondeterminism
+to a stage that is mostly not a model problem. They keep their existing path in BOTH arms, so
+the exploratory variable stays the four stages where the toolset could plausibly matter.
 
 Prompts are imported verbatim from the clean-room drivers wherever one exists, so an A/B
 between the arms varies the toolset and backend only. Read the isolation warning at the top of
@@ -30,7 +35,6 @@ from src.cleanroom.agents.deep.planning import PROMPT as PLANNING_PROMPT
 from src.cleanroom.agents.deep.planning import _spec_sheet
 from src.cleanroom.agents.deep.runtime import load_skills
 from src.cleanroom.agents.planning.schema.plan import ArgDoc, FRPlan
-from src.cleanroom.agents.spec_agent.schema.ir import FRContract
 from src.cleanroom.agents.test.schema.tests import FeatureTests, TestCase
 from src.cleanroom.experiments.full_toolset import (
     CODE_DIR,
@@ -83,174 +87,6 @@ def _requirement_index(ir: dict) -> dict[str, str]:
 def _brief(exc: ValidationError) -> str:
     return "\n".join(
         f"- {'.'.join(str(p) for p in e['loc'])}: {e['msg']}" for e in exc.errors()[:8])
-
-
-# ======================================================================================
-# Stage 1 — Spec / contract extraction   (NEW: single-shot in the clean-room arm)
-# ======================================================================================
-
-SPEC_AGENT_PROMPT = """\
-You are the specification agent. For EACH functional requirement of one feature you write a
-BEHAVIORAL CONTRACT: a design-by-contract statement of what the operation must do.
-
-Your filesystem:
-* {spec_dir}/ — one read-only sheet per FR: its requirement text. READ THESE FIRST.
-{shell_note}
-A contract is a specification, NOT code: describe WHAT must hold, not how to implement it.
-Keep it stack-agnostic (no function names, no frameworks). Ground every field strictly in the
-requirement's own text; never invent behaviour it does not state.
-
-Submit each one with `submit_contract(...)`:
-* id             — the FR id, copied VERBATIM from its sheet. Never invent one.
-* stimulus       — the input event/data/action that triggers the operation.
-* precondition   — the boolean condition on the INPUTS that must hold first ("none" if any
-                   input is acceptable). Constrains the stimulus only, never stored state.
-* response       — what the system does in reaction.
-* postcondition  — what is guaranteed true after it completes.
-
-`submit_contract` is the ONLY way to deliver a contract; a file you write is not collected.
-Resubmitting an id replaces its earlier contract. You are done when every FR is accepted.
-Start with `write_todos` listing the FR ids, then read every sheet.
-"""
-
-
-def spec_contracts(root: Path, feature_name: str, feature_id: str, frs: list[dict],
-                   log: RunLog, *, model: str | None = None) -> dict[str, FRContract]:
-    """Behavioral contracts for one feature's FRs. Returns ``{fr_id: FRContract}``."""
-    if not frs:
-        return {}
-
-    sheets = {
-        f"{SPEC_DIR}/{str(r['id']).replace('.', '_')}.md":
-            f"# FR {r['id']}\n\n## Requirement\n{requirement_text(r)}\n"
-        for r in frs
-    }
-    seed_disk(root, sheets)
-
-    known = {str(r["id"]).strip() for r in frs}
-    accepted: dict[str, FRContract] = {}
-
-    @tool
-    def submit_contract(
-        id: Annotated[str, "The FR id, copied verbatim from its sheet."],
-        stimulus: Annotated[str, "The triggering input event, data or action."],
-        precondition: Annotated[str, 'Boolean condition on the inputs, or "none".'],
-        response: Annotated[str, "What the system does in reaction."],
-        postcondition: Annotated[str, "What is guaranteed true afterwards."],
-    ) -> str:
-        """Record the behavioral contract for ONE functional requirement."""
-        key = (id or "").strip().strip("[]").strip()
-        if key not in known:
-            return f"Unknown FR id {id!r}. Contract only: {', '.join(sorted(known))}."
-        try:
-            contract = FRContract(id=key, stimulus=stimulus, precondition=precondition,
-                                  response=response, postcondition=postcondition)
-        except ValidationError as exc:
-            return f"Rejected — fix these fields and resubmit FR {id}:\n{_brief(exc)}"
-        accepted[key] = contract
-        remaining = sorted(known - set(accepted))
-        return (f"Accepted FR {key}. "
-                + (f"Still to contract: {', '.join(remaining)}." if remaining
-                   else "All FRs contracted — you are done."))
-
-    agent = build_full_agent(
-        [submit_contract],
-        SPEC_AGENT_PROMPT.format(spec_dir=SPEC_DIR, shell_note=_SHELL_NOTE),
-        _backend_for(root), name="spec", model=model)
-    listing = "\n".join(f"- FR {r['id']}" for r in frs)
-    steps = full_toolset_max_steps() + 6 * len(frs)
-    state, secs = invoke_full(
-        agent,
-        f"Feature: {feature_name} (id {feature_id})\n\nWrite the behavioral contract for these "
-        f"{len(frs)} functional requirement(s):\n{listing}\n\nTheir sheets are in {SPEC_DIR}/.",
-        max_steps=steps)
-    log.record("spec", str(feature_id), state, secs, steps)
-    return accepted
-
-
-# ======================================================================================
-# Stage 2 — Dependency inference   (NEW: single-shot in the clean-room arm)
-# ======================================================================================
-
-DEPENDENCY_PROMPT = """\
-You are the dependency agent. Within ONE feature you decide which functional requirements
-must run BEFORE which others — a real data/state prerequisite, not a narrative ordering.
-
-Your filesystem:
-* {spec_dir}/ — one read-only sheet per FR. READ THESE FIRST.
-{shell_note}
-An edge FR-A -> FR-B means B must have happened for A to be meaningful (A consumes an entity
-B creates, A updates state B established). Do NOT add an edge merely because two FRs mention
-the same noun, or because one is written after the other.
-
-Call `submit_dependency(id=..., prerequisite_ids=...)` once per FR that HAS prerequisites,
-with `prerequisite_ids` as a JSON list of FR ids from this feature. FRs with none need no
-call. Resubmitting an id replaces its earlier edge set. Call `no_more_dependencies()` when
-finished — including when there are none at all, which is a perfectly good answer.
-Start with `write_todos`, then read every sheet.
-"""
-
-
-def dependency_edges(root: Path, feature_name: str, feature_id: str, frs: list[dict],
-                     log: RunLog, *, model: str | None = None) -> list[tuple[str, str]]:
-    """Inferred within-feature FR edges as ``[(source, prerequisite), ...]``."""
-    if len(frs) < 2:
-        return []
-
-    sheets = {
-        f"{SPEC_DIR}/{str(r['id']).replace('.', '_')}.md":
-            f"# FR {r['id']}\n\n## Requirement\n{requirement_text(r)}\n"
-        for r in frs
-    }
-    seed_disk(root, sheets)
-
-    within = {str(r["id"]).strip() for r in frs}
-    edges: dict[str, list[str]] = {}
-    done: dict[str, bool] = {}
-
-    @tool
-    def submit_dependency(
-        id: Annotated[str, "The FR that has prerequisites."],
-        prerequisite_ids: Annotated[str, 'JSON list of FR ids, e.g. ["1.1","1.2"].'],
-    ) -> str:
-        """Record which FRs must run before ONE functional requirement."""
-        source = (id or "").strip().strip("[]").strip()
-        if source not in within:
-            return f"Unknown FR id {id!r}. Use only: {', '.join(sorted(within))}."
-        try:
-            targets = json.loads(prerequisite_ids or "[]")
-        except ValueError as exc:
-            return f"prerequisite_ids is not valid JSON ({exc}). Resubmit as a JSON list."
-        if not isinstance(targets, list):
-            return "prerequisite_ids must be a JSON LIST of ids."
-        kept = [t for t in ((str(x).strip().strip("[]").strip()) for x in targets)
-                if t in within and t != source]
-        dropped = len(targets) - len(kept)
-        edges[source] = kept
-        return (f"Recorded {len(kept)} prerequisite(s) for FR {source}."
-                + (f" Dropped {dropped} that were not FRs of this feature." if dropped else ""))
-
-    @tool
-    def no_more_dependencies() -> str:
-        """Declare the dependency analysis for this feature complete."""
-        done["yes"] = True
-        return f"Finished: {sum(len(v) for v in edges.values())} edge(s) recorded."
-
-    agent = build_full_agent(
-        [submit_dependency, no_more_dependencies],
-        DEPENDENCY_PROMPT.format(spec_dir=SPEC_DIR, shell_note=_SHELL_NOTE),
-        _backend_for(root), name="dependency", model=model)
-    listing = "\n".join(f"- FR {r['id']}" for r in frs)
-    steps = full_toolset_max_steps() + 4 * len(frs)
-    state, secs = invoke_full(
-        agent,
-        f"Feature: {feature_name} (id {feature_id})\n\nInfer the prerequisite edges among "
-        f"these {len(frs)} functional requirement(s):\n{listing}\n\n"
-        f"Their sheets are in {SPEC_DIR}/.",
-        max_steps=steps)
-    log.record("dependency", str(feature_id), state, secs, steps)
-
-    return [(src, tgt) for src, targets in edges.items() for tgt in targets]
 
 
 # ======================================================================================
