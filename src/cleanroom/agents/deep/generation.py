@@ -29,6 +29,19 @@ Three things that would silently break it, all avoided here:
 ``tests/test_isolation.py`` asserts all of this, including static guards against the three
 regressions above. See ``deep/README.md``.
 =================================================================
+
+=====================  TOOL CALLING IS THE CONTRACT  =====================
+An artifact counts ONLY when it arrives through this module's validated ``submit_*`` tool.
+The agent's virtual filesystem is a scratchpad: a file it happens to leave at some path is
+NOT harvested as output, and a free-text reply is never scraped for a code fence.
+
+That is deliberate. The submit tools are where the fr_id is checked against the requested
+set, emptiness is rejected and pydantic validation errors are handed back for the agent to
+fix. Accepting an unsubmitted file would route around all of it, and would let a run whose
+tool calling silently failed still report artifacts — making ``frs_submitted`` a number that
+cannot be trusted. A requested artifact that never gets submitted raises
+``DeepGenerationIncomplete`` instead, naming what is missing.
+==========================================================================
 """
 
 from __future__ import annotations
@@ -48,7 +61,6 @@ from src.cleanroom.agents.deep.runtime import (
     agent_step_count,
     build_agent,
     deep_max_steps,
-    final_files,
     invoke_agent,
     load_skills,
     seed_files,
@@ -57,6 +69,14 @@ from src.cleanroom.agents.deep.runtime import (
 )
 from src.cleanroom.agents.test.schema.tests import FeatureTests, TestCase
 from src.cleanroom.utils.contracts import requirement_text
+
+
+class DeepGenerationIncomplete(RuntimeError):
+    """An agent finished its step budget without submitting every artifact it was asked for.
+
+    Raised rather than returning a partial result: a silently short generation shows up much
+    later as an unexplained missing file, whereas this names the stage and the missing ids.
+    """
 
 # --------------------------------------------------------------------------------------
 # Shared: the contract sheet every generator reads, and nothing else.
@@ -153,9 +173,12 @@ Rules:
   a shape, so two files do not disagree.
 
 Submit each file with `submit_implementation(fr_id=..., content=...)` giving the FULL source.
-(You may also `write_file` to the listed path; `submit_implementation` is preferred because it
-validates the fr_id. Note `write_file` cannot overwrite a file that already exists — use
-`edit_file` to revise one.)
+This tool call is the ONLY way to deliver an implementation. Drafting into {code_root}/ with
+`write_file` is encouraged — it is how you cross-read your own files for consistent data shapes
+— but a file left there is NOT collected: nothing you have not submitted counts, and you are not
+finished until `submit_implementation` has accepted every FR. (`write_file` cannot overwrite an
+existing file — use `edit_file` to revise a draft.) Resubmitting an FR replaces its earlier
+submission, so fixing one is just another call.
 Start with `write_todos` listing the FRs, then read every contract sheet before writing.
 """
 
@@ -206,9 +229,11 @@ def deep_generate_code(
             return f"Unknown fr_id {fr_id!r}. Implement only: {', '.join(sorted(known))}."
         if not (content or "").strip():
             return "Rejected: content was empty. Submit the complete source of the file."
+        replaced = fr_id in submitted
         submitted[fr_id] = content
         remaining = sorted(known - set(submitted))
-        return (f"Recorded FR {fr_id} ({len(content.splitlines())} lines). "
+        return (f"{'Replaced' if replaced else 'Recorded'} FR {fr_id} "
+                f"({len(content.splitlines())} lines). "
                 + (f"Still to implement: {', '.join(remaining)}." if remaining
                    else "All FRs implemented — you are done."))
 
@@ -223,17 +248,21 @@ def deep_generate_code(
 
     steps = max_steps or (deep_max_steps() + 10 * len(contracts))
     state = invoke_agent(agent, opening, seed_files(seeds), max_steps=steps)
-    produced = final_files(state)
 
-    files: list[GeneratedFile] = []
-    for c in contracts:
-        fr_id = c["fr_id"]
-        content = submitted.get(fr_id) or produced.get(path_by_fr[fr_id]) or ""
-        if not content.strip():
-            continue
-        files.append(GeneratedFile(
-            fr_id=fr_id, feature_id=c["feature_id"], path=c["file_path"],
-            mvc_layer=c["mvc_layer"], content=content))
+    # Submitted content ONLY — the /code files the agent drafted into are a scratchpad and are
+    # deliberately not harvested. See "TOOL CALLING IS THE CONTRACT" in the module docstring.
+    missing = sorted(known - set(submitted))
+    if missing:
+        raise DeepGenerationIncomplete(
+            f"the code agent finished without submitting {len(missing)} of {len(contracts)} "
+            f"FR(s): {', '.join(missing)}. It took {agent_step_count(state)} of {steps} steps. "
+            f"Every implementation must arrive via submit_implementation.")
+
+    files = [
+        GeneratedFile(fr_id=c["fr_id"], feature_id=c["feature_id"], path=c["file_path"],
+                      mvc_layer=c["mvc_layer"], content=submitted[c["fr_id"]])
+        for c in contracts
+    ]
 
     return files, {
         "driver": "deepagent", "frs_requested": len(contracts), "frs_generated": len(files),
@@ -270,7 +299,10 @@ Rules:
 * `oracle="eq"` asserts a returned value; `oracle="raises"` asserts a ValueError.
 
 For each case call `submit_test_case(...)`. When every case is recorded, call
-`submit_test_source(...)` with the complete runnable test file.
+`submit_test_source(...)` with the complete runnable test file. These two tool calls are the
+ONLY way to deliver the suite: a file left in {test_root}/ is NOT collected, and you are not
+finished until both have been accepted. Cover every FR you were given — a case is required for
+each one.
 Start with `write_todos`, then read every contract sheet.
 """
 
@@ -355,7 +387,17 @@ def deep_generate_tests(
     steps = max_steps or (deep_max_steps() + 10 * len(contracts))
     state = invoke_agent(agent, opening, seed_files(seeds), max_steps=steps)
 
-    test_source = source.get("src") or final_files(state).get(source_path) or ""
+    # Submitted content ONLY — see "TOOL CALLING IS THE CONTRACT" in the module docstring.
+    test_source = source.get("src", "")
+    untested = sorted(known - {c.requirement_id for c in cases})
+    if not test_source.strip() or untested:
+        detail = (f"no test source was submitted" if not test_source.strip()
+                  else f"no case covers FR(s) {', '.join(untested)}")
+        raise DeepGenerationIncomplete(
+            f"the test agent finished for feature {feature_id} but {detail}. It recorded "
+            f"{len(cases)} case(s) in {agent_step_count(state)} of {steps} steps. The suite must "
+            f"arrive via submit_test_case/submit_test_source.")
+
     result = FeatureTests(feature_id=str(feature_id), cases=cases, test_source=test_source)
     return result, {
         "driver": "deepagent", "frs_requested": len(contracts), "cases": len(cases),
@@ -387,7 +429,10 @@ Rules:
 * The error mode matters: a "raise" contract means the precondition belongs in `requires`.
 * Prove what you specify. A method whose `ensures` is trivially true is worth nothing.
 {verify_note}
-Submit with `submit_dafny(module=..., source=...)` giving the COMPLETE module source.
+Submit with `submit_dafny(module=..., source=...)` giving the COMPLETE module source. This
+tool call is the ONLY way to deliver the module: a draft left in {proof_root}/ is NOT collected,
+and you are not finished until it has been accepted. Submit even a proof that does not fully
+verify — an honest partial module is a result; silence is not.
 Start with `write_todos` listing the FRs, then read every contract sheet.
 """
 
@@ -424,7 +469,7 @@ def deep_generate_dafny(
     skills = load_skills(["dafny-proofs", "dafny-patterns"])
     seeds.update(skills)
     module = f"Feature_{str(feature_id).replace('.', '_')}"
-    draft_path = virtual_path(PROOF_ROOT, 0, f"{module}.dfy")
+    draft_path = virtual_path(PROOF_ROOT, 0, f"{module}.dfy")   # a drafting path, not an output
     # Not pre-seeded — see the note in deep_generate_code.
     # No CODE_ROOT and no TEST_ROOT entry. See the module docstring.
 
@@ -472,12 +517,17 @@ def deep_generate_dafny(
     listing = "\n".join(f"- FR {c['fr_id']}: {c.get('signature', '')}" for c in contracts)
     opening = (f"Specify and prove feature {feature_id} in Dafny module `{module}`, covering "
                f"these {len(contracts)} functional requirement(s):\n{listing}\n\n"
-               f"Their contract sheets are in {SPEC_ROOT}/.")
+               f"Their contract sheets are in {SPEC_ROOT}/. Draft at {draft_path} if it helps, "
+               f"but deliver the module with submit_dafny.")
 
     steps = max_steps or (deep_max_steps() + 12 * len(contracts))
     state = invoke_agent(agent, opening, seed_files(seeds), max_steps=steps)
 
-    source = submitted.get("source") or final_files(state).get(draft_path) or ""
+    # Submitted content ONLY — see "TOOL CALLING IS THE CONTRACT" in the module docstring.
+    # Unlike code and tests this does NOT raise: an unproved feature is a legitimate outcome the
+    # pipeline already records (DafnyAgent turns an empty source into an unverified FeatureDafny),
+    # so a proof agent that gives up must not abort the whole run.
+    source = submitted.get("source", "")
     out = {"feature_id": str(feature_id),
            "module": submitted.get("module") or module,
            "source": source}

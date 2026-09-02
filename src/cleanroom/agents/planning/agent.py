@@ -27,7 +27,7 @@ import sys
 from collections import defaultdict
 from pathlib import Path
 
-from src.cleanroom.agents.planning.schema.plan import Contract, FeaturePlan, PlanningOutput
+from src.cleanroom.agents.planning.schema.plan import Contract, PlanningOutput
 from src.cleanroom.agents.spec_agent.schema.ir import BehavioralContract
 from src.cleanroom.utils.ir import feature_id_of, normalize_ir_features, requirement_text
 from src.cleanroom.utils.llm_client import get_llm
@@ -191,13 +191,15 @@ def _infer_return_type(signature: str) -> str | None:
 
 
 class PlanningAgent:
-    def __init__(self, llm=None, stack: str = "python", prompt_strategy: str = "baseline",
-                 gen_driver: str = "deterministic") -> None:
-        # 'deepagent' routes _design_feature through the deepagents driver (see
-        # agents/deep/planning.py). Planning has no isolation requirement — its output is the
-        # shared read-only contract every downstream agent binds to.
-        self.gen_driver = gen_driver
-        # `llm` is injectable so tests/stubs avoid network calls.
+    def __init__(self, llm=None, stack: str = "python", prompt_strategy: str = "baseline") -> None:
+        # _design_feature always runs through the deepagents driver (see agents/deep/planning.py):
+        # the agent reads each FR's spec sheet and submits FRs ONE AT A TIME through
+        # `submit_fr_plan`, so a rejected field comes back as a tool error naming that one FR
+        # instead of the whole feature's structured output failing at once. Planning has no
+        # isolation requirement — its output is the shared read-only contract every downstream
+        # agent binds to.
+        # `llm` is injectable so tests/stubs avoid network calls. NOTE: _design_feature does not
+        # use it (the deep driver builds its own agent); the other LLM steps in plan() do.
         self.llm = llm if llm is not None else get_llm()
         self.renderer = PromptRenderer()
         # 'baseline' = original prompt; 'cot' = the parallel reason-first variant.
@@ -313,33 +315,16 @@ class PlanningAgent:
 
     # --- helpers ---------------------------------------------------------------
     def _design_feature(self, feature_name, fr_order, text_by_id, contracts_by_fr) -> dict:
-        """One structured LLM call for a single feature's FRs. Returns {fr_id: FRPlan}.
+        """Design a single feature's FRs with the planning agent. Returns {fr_id: FRPlan}.
 
-        Each requirement is presented with its spec text and its behavioral contract so the
-        LLM can shape a faithful signature, layer, and per-arg/return docs.
+        Each requirement is seeded as its own spec sheet — its text plus its behavioral
+        contract — so the agent can shape a faithful signature, layer, and per-arg/return docs,
+        and submit the FRs one at a time through `submit_fr_plan`.
         """
-        requirements = []
-        for rid in fr_order:
-            bc = contracts_by_fr.get(rid)
-            requirements.append({
-                "id": rid,
-                "text": text_by_id.get(rid, ""),
-                "contract": bc,
-            })
-        if getattr(self, "gen_driver", "deterministic") == "deepagent":
-            from src.cleanroom.agents.deep.planning import deep_design_feature  # noqa: PLC0415
+        from src.cleanroom.agents.deep.planning import deep_design_feature  # noqa: PLC0415
 
-            text_by_id = {r["id"]: r["text"] for r in requirements}
-            contracts_by = {r["id"]: r["contract"] for r in requirements}
-            return deep_design_feature(feature_name, list(fr_order), text_by_id, contracts_by,
-                                       stack=self.stack)
-
-        prompt = self.renderer.render(
-            cot_template("plan_feature.j2", self.prompt_strategy),
-            {"feature_name": feature_name, "requirements": requirements, "stack": self.stack},
-        )
-        result: FeaturePlan = self.llm.with_structured_output(FeaturePlan).invoke(prompt)
-        return {_norm_id(p.id): p for p in result.plans}
+        return deep_design_feature(feature_name, list(fr_order), text_by_id, contracts_by_fr,
+                                   stack=self.stack)
 
     @staticmethod
     def _prereq_notes(prereq_ids: list[str], designs: dict) -> list[str]:

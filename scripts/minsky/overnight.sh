@@ -19,6 +19,9 @@ cd "$(dirname "$0")/../.."
 MINSKY_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 MODEL_KEY="${MODEL_KEY:-qwen-coder}"
+# An arm now selects the REPAIR driver only. Generation (planning/code/test/proof) is always
+# agent-driven — the deterministic generation arm was removed, so `--gen-driver` no longer
+# exists and passing it would abort every run with an argparse error.
 ARMS="${ARMS:-deterministic deepagent}"
 STRATEGY="${STRATEGY:-mot}"
 LANGUAGE="${LANGUAGE:-python}"
@@ -104,7 +107,7 @@ for srs in "${SRS_LIST[@]}"; do
     fi
 
     flags=($PIPELINE_FLAGS)
-    [ "$arm" = "deepagent" ] && flags+=(--gen-driver deepagent --repair-driver deepagent)
+    [ "$arm" = "deepagent" ] && flags+=(--repair-driver deepagent)
 
     log "RUN  $stem / $arm"
     start=$SECONDS

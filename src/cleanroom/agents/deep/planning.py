@@ -1,18 +1,21 @@
-"""Deepagents driver for the Planning stage (Stage 1 of the migration).
+"""Deepagents driver for the Planning stage.
 
-Drop-in for ``PlanningAgent._design_feature``: same inputs, same ``{fr_id: FRPlan}`` return,
-so ``PlanningAgent.plan`` keeps its normalization, dedupe and docstring composition unchanged.
-The difference is who drives the design:
+The implementation of ``PlanningAgent._design_feature``: the agent reads each FR's spec sheet
+from its filesystem, plans with ``write_todos``, and submits FRs ONE AT A TIME through
+``submit_fr_plan``. ``PlanningAgent.plan`` keeps its normalization, dedupe and docstring
+composition on top of the ``{fr_id: FRPlan}`` this returns.
 
-  deterministic : ONE ``with_structured_output(FeaturePlan)`` call per feature — the model
-                  sees every FR at once and must emit the whole plan in a single shot.
-  deepagent     : the agent reads each FR's spec sheet from its filesystem, plans with
-                  ``write_todos``, and submits FRs ONE AT A TIME through ``submit_fr_plan``.
+Submitting per FR is the substantive gain over the single ``with_structured_output(FeaturePlan)``
+call this replaced: a rejected field (bad ``mvc_layer``, malformed JSON, an invented id) comes
+back as a tool error naming the problem, and the agent fixes that one FR instead of the whole
+feature's structured output failing validation at once. That matters most on the smaller
+open-weight models we now serve ourselves.
 
-Submitting per FR is the substantive gain: a rejected field (bad ``mvc_layer``, malformed
-JSON, an invented id) comes back as a tool error naming the problem, and the agent fixes that
-one FR instead of the whole feature's structured output failing validation at once. That
-matters most on the smaller open-weight models we now serve ourselves.
+``submit_fr_plan`` is the ONLY channel: a plan the agent merely wrote down is not read back.
+Unlike the code and test generators — which raise ``DeepGenerationIncomplete`` on an unsubmitted
+artifact — an FR the agent never submits is simply absent here, because ``PlanningAgent.plan``
+already has a documented degraded path for it (a default contract plus a recorded note). Aborting
+the run would be strictly worse than that.
 
 ==========================  ISOLATION  ==========================
 The planning stage has NO isolation requirement: its output — the per-FR contract — is

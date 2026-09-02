@@ -1,8 +1,10 @@
 """Test Agent.
 
-Derives black-box test cases from the SPECIFICATION, one feature at a time. One
-LLM call per feature, each scoped to ONLY that feature's requirements — never the
-whole IR.
+Derives black-box test cases from the SPECIFICATION, one feature at a time. Generation is
+driven by a deepagents agent (``agents/deep/generation.py``): one agent per feature, briefed
+with that feature's per-FR contract sheets in its own virtual filesystem, recording each case
+through ``submit_test_case`` and the runnable module through ``submit_test_source``. There is
+no single-shot "deterministic" driver any more — the agent path is the only path.
 
 ==================  STRUCTURAL ISOLATION (the project's core)  ==================
 This agent is the mirror image of the Code Agent: tests are a pure function of the
@@ -16,6 +18,8 @@ SPECIFICATION, and by construction the agent cannot see the implementation.
     ir['features'].
   * It GENERATES tests; it does not execute them against any implementation. Running
     tests against code is a separate, later certification stage.
+  * The generating agent runs on a StateBackend seeded with contract sheets and its own
+    /tests pool only, so no implementation exists in its filesystem to be found.
 
 Do not let this agent peek at the generated code to "make better tests" — that would
 destroy the spec/code separation that is the whole point of the pipeline.
@@ -24,7 +28,6 @@ destroy the spec/code separation that is the whole point of the pipeline.
 
 import json
 import sys
-import time
 from pathlib import Path
 
 from src.cleanroom.agents.planning.agent import PlanningAgent
@@ -36,42 +39,16 @@ from src.cleanroom.utils.llm_client import get_llm
 from src.cleanroom.utils.prompt_renderer import PromptRenderer, cot_template
 
 
-_FEATURE_TESTS_OUTPUT_CONTRACT = """
-Return exactly one structured object matching this shape:
-{
-  "feature_id": "string",
-  "cases": [
-    {
-      "requirement_id": "string",
-      "description": "string",
-      "inputs": "string",
-      "expected": "string",
-      "inputs_json": "{}",
-      "expected_json": "{}",
-      "oracle": "eq",
-      "setup_json": ""
-    }
-  ],
-  "test_source": "full runnable test module source as one string"
-}
-
-Do not return prose, markdown, or explanations after the object. `oracle` must be exactly
-"eq" or "raises". `inputs_json`, `expected_json`, and `setup_json` must be JSON strings.
-"""
-
-
 class TestAgent:
     # Keep pytest from collecting this class as a test (its name starts with "Test").
     __test__ = False
 
     def __init__(self, llm=None, stack: str = "python", language: str = "python",
-                 gen_driver: str = "deterministic",
                  prompt_strategy: str = "baseline") -> None:
-        # 'deepagent' routes generate() through agents/deep/generation.py. That driver's
-        # filesystem holds contracts and its own test file only — never generated code.
-        self.gen_driver = gen_driver
         # `llm` is injectable only so tests can avoid network calls; it is NOT a
         # channel for implementation data. Defaults to the shared cost-control model client.
+        # NOTE: generate() does NOT use this client — the deep driver builds its own agent on
+        # get_llm(). It still backs repair_compile_error below.
         self.llm = llm if llm is not None else get_llm()
         self.renderer = PromptRenderer()
         # 'baseline' = original prompts; 'cot' = the parallel reason-first variants. CoT reasons
@@ -87,76 +64,29 @@ class TestAgent:
         self.target = get_target(language, stack)
 
     def generate(self, ir: dict) -> GeneratedTests:
-        """Generate tests for every feature from the spec only. Input is the spec."""
+        """Generate tests for every feature from the spec only. Input is the spec.
+
+        One deepagents agent per feature, briefed from the planner's CONTRACTS — exactly the
+        sheets the code and proof agents get, so all three derive from byte-identical input.
+        The agent's filesystem never contains generated code; see agents/deep/generation.py.
+        """
+        from src.cleanroom.agents.deep.generation import deep_generate_tests  # noqa: PLC0415
+
         normalize_ir_features(ir)
         PlanningAgent.normalize_ir_planning(ir)
-        features: list[FeatureTests] = []
 
-        deep = getattr(self, "gen_driver", "deterministic") == "deepagent"
         contracts_by_feature: dict[str, list[dict]] = {}
-        if deep:
-            # The deep test agent is briefed from the planner's CONTRACTS, exactly as the code
-            # and proof agents are, so all three derive from byte-identical sheets. Its
-            # filesystem never contains generated code — see agents/deep/generation.py.
-            from src.cleanroom.agents.deep.generation import deep_generate_tests  # noqa: PLC0415
+        for c in (ir.get("planning") or {}).get("contracts", []) or []:
+            contracts_by_feature.setdefault(str(c["feature_id"]), []).append(c)
 
-            for c in (ir.get("planning") or {}).get("contracts", []) or []:
-                contracts_by_feature.setdefault(str(c["feature_id"]), []).append(c)
-
+        features: list[FeatureTests] = []
         for unit in feature_units(ir):  # the ONLY IR read: features/requirements
-            if deep:
-                feature_id = str(unit["feature_id"])
-                result, _metrics = deep_generate_tests(
-                    ir, feature_id, contracts_by_feature.get(feature_id, []),
-                    language=self.language)
-                if result is not None:
-                    features.append(result)
-                continue
-
-            prompt = self.renderer.render(
-                cot_template(self.target.test_template(), self.prompt_strategy),
-                {
-                    "feature_id": unit["feature_id"],
-                    "name": unit["name"],
-                    "description": unit["description"],
-                    "requirements": unit["requirements"],
-                    "stack": self.stack,
-                },
-            )
-
-            prompt = f"{prompt}\n\n{_FEATURE_TESTS_OUTPUT_CONTRACT}"
-
-            # One structured call per feature. Schema via with_structured_output, reinforced in the
-            # prompt for weaker models that sometimes answer in prose instead of tool args. The model
-            # returns both the structured `cases` oracle and a runnable `test_source` module.
-            result = None
-            last_error: Exception | None = None
-            for attempt in range(1, 4):
-                try:
-                    result = self.llm.with_structured_output(FeatureTests).invoke(prompt)
-                except Exception as exc:
-                    last_error = exc
-                if result is not None and getattr(result, "cases", None) is not None:
-                    break
-                if attempt < 3:
-                    time.sleep(float(attempt))
-            else:
-                if last_error is not None:
-                    raise RuntimeError(
-                        f"test generation failed for feature {unit['feature_id']}"
-                    ) from last_error
-                raise RuntimeError(
-                    f"test generation returned no structured FeatureTests for feature {unit['feature_id']}"
-                )
-
-            # The spec owns feature_id; don't trust the LLM to echo it correctly.
-            features.append(
-                FeatureTests(
-                    feature_id=unit["feature_id"],
-                    cases=list(result.cases),
-                    test_source=result.test_source,
-                )
-            )
+            feature_id = str(unit["feature_id"])
+            result, _metrics = deep_generate_tests(
+                ir, feature_id, contracts_by_feature.get(feature_id, []),
+                language=self.language)
+            if result is not None:
+                features.append(result)
 
         return GeneratedTests(features=features)
 

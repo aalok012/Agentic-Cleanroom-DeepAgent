@@ -20,8 +20,14 @@ from langchain_core.messages import ToolMessage
 from src.cleanroom.agents.deep import runtime as deep
 from tests.conftest import script
 
-pytestmark = pytest.mark.skipif(
-    not deep.deepagents_available(), reason="deepagents not installed")
+# NOT skipped when deepagents is missing — see the note in test_deep_generation.py. It matters
+# most here: these tests ARE the clean-room guarantee, and a silent skip would retire the
+# evidence for it while every other test still passed.
+def test_deepagents_is_installed():
+    """Guard: the isolation assertions below are vacuous without a real agent to run."""
+    assert deep.deepagents_available(), (
+        "deepagents is not importable, so the isolation guarantee is UNVERIFIED. "
+        "It is a required dependency: `uv sync`.")
 
 CODE_CONTENT = "def add(a, b):\n    return a + b  # CODE_POOL_MARKER\n"
 TEST_CONTENT = "def test_add():\n    assert add(1, 2) == 3  # TEST_POOL_MARKER\n"
@@ -266,7 +272,12 @@ def test_every_generator_seeds_only_its_own_pool(generator, forbidden):
 # --- skills: guidance must not become a side channel --------------------------------
 def test_skills_are_seeded_and_readable(fake_llm):
     """Each generator's authored guidance reaches its own filesystem under /skills."""
-    from src.cleanroom.agents.deep.generation import deep_generate_tests
+    import contextlib
+
+    from src.cleanroom.agents.deep.generation import (
+        DeepGenerationIncomplete,
+        deep_generate_tests,
+    )
 
     fake_llm(probe(("ls", {"path": "/skills"}),
                    ("read_file", {"file_path": "/skills/blackbox-testing.md"}), "read it"))
@@ -283,10 +294,14 @@ def test_skills_are_seeded_and_readable(fake_llm):
         return state
 
     gen.invoke_agent = capture
+    # This scripted agent only reads its skill and never submits, so the driver rightly reports
+    # an incomplete suite. What is under test here is what the agent could READ, so the
+    # completeness check is irrelevant to it — the captured tool output is the assertion.
     try:
-        deep_generate_tests({"features": []}, "1", [{
-            "fr_id": "1.1", "feature_id": "1", "signature": "def f() -> None",
-            "docstring": "d", "mvc_layer": "model"}])
+        with contextlib.suppress(DeepGenerationIncomplete):
+            deep_generate_tests({"features": []}, "1", [{
+                "fr_id": "1.1", "feature_id": "1", "signature": "def f() -> None",
+                "docstring": "d", "mvc_layer": "model"}])
     finally:
         gen.invoke_agent = original
 

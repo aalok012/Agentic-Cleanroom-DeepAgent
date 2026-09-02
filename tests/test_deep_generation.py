@@ -12,8 +12,15 @@ import pytest
 from src.cleanroom.agents.deep import runtime as deep
 from tests.conftest import script
 
-pytestmark = pytest.mark.skipif(
-    not deep.deepagents_available(), reason="deepagents not installed")
+# NOT skipped when deepagents is missing. It used to be, correctly, while the deep drivers were
+# an opt-in extra. They are now the ONLY generation path and `deepagents` is a hard dependency
+# (pyproject), so skipping on a failed import would turn a pipeline that cannot generate anything
+# at all into a green suite. Fail instead — loudly, once, with the cause named.
+def test_deepagents_is_installed():
+    """Guard: every other test in this file, and the whole pipeline, depends on this import."""
+    assert deep.deepagents_available(), (
+        "deepagents is not importable, so no stage of the pipeline can generate anything. "
+        "It is a required dependency: `uv sync`.")
 
 CONTRACT = {
     "fr_id": "1.1",
@@ -68,26 +75,50 @@ def test_code_generator_rejects_an_unknown_fr(fake_llm):
     assert metrics["frs_submitted"] == 1
 
 
-def test_code_generator_falls_back_to_the_virtual_file(fake_llm):
-    """An agent that edits the file but never calls submit still gets its work committed."""
-    from src.cleanroom.agents.deep.generation import deep_generate_code
+def test_code_generator_does_not_harvest_an_unsubmitted_file(fake_llm):
+    """The virtual /code tree is a scratchpad. A file the agent wrote but never submitted is
+    NOT collected — submit_implementation is the only channel, so the fr_id check, the
+    emptiness check and the metrics cannot be routed around."""
+    from src.cleanroom.agents.deep.generation import (
+        DeepGenerationIncomplete,
+        deep_generate_code,
+    )
 
     path = deep.virtual_path(deep.CODE_ROOT, 0, "1_1.py")
     fake_llm(probe(
         ("write_file", {"file_path": path, "content": "def search(q):\n    return {}\n"}),
         "wrote it directly"))
-    files, _ = deep_generate_code(IR, [CONTRACT])
 
-    assert len(files) == 1 and "def search" in files[0].content
+    with pytest.raises(DeepGenerationIncomplete, match="1.1"):
+        deep_generate_code(IR, [CONTRACT])
 
 
-def test_code_generator_skips_empty_content(fake_llm):
-    from src.cleanroom.agents.deep.generation import deep_generate_code
+def test_code_generator_raises_when_an_fr_is_never_submitted(fake_llm):
+    """Empty content is rejected by the tool, so the FR stays unsubmitted. That must fail
+    loudly rather than return a short list a later stage discovers as a missing file."""
+    from src.cleanroom.agents.deep.generation import (
+        DeepGenerationIncomplete,
+        deep_generate_code,
+    )
 
     fake_llm(probe(("submit_implementation", {"fr_id": "1.1", "content": "   "}), "gave up"))
+
+    with pytest.raises(DeepGenerationIncomplete, match="1.1"):
+        deep_generate_code(IR, [CONTRACT])
+
+
+def test_code_generator_lets_an_fr_be_resubmitted(fake_llm):
+    """Fixing an implementation is just another call; the last submission wins."""
+    from src.cleanroom.agents.deep.generation import deep_generate_code
+
+    fake_llm(probe(
+        ("submit_implementation", {"fr_id": "1.1", "content": "def search(q):\n    return 1\n"}),
+        ("submit_implementation", {"fr_id": "1.1", "content": "def search(q):\n    return 2\n"}),
+        "revised"))
     files, metrics = deep_generate_code(IR, [CONTRACT])
 
-    assert files == [] and metrics["frs_generated"] == 0
+    assert len(files) == 1 and "return 2" in files[0].content
+    assert metrics["frs_submitted"] == 1
 
 
 # --- Stage 2: test generator --------------------------------------------------------
@@ -128,16 +159,20 @@ def test_test_generator_refuses_source_before_cases(fake_llm):
 
 
 def test_test_generator_rejects_malformed_inputs_json(fake_llm):
-    from src.cleanroom.agents.deep.generation import deep_generate_tests
+    """The case is refused, so no case covers FR 1.1 and no source is submitted — an
+    incomplete suite must fail loudly rather than be returned empty."""
+    from src.cleanroom.agents.deep.generation import (
+        DeepGenerationIncomplete,
+        deep_generate_tests,
+    )
 
     fake_llm(probe(
         ("submit_test_case", {
             "requirement_id": "1.1", "description": "d", "inputs": "i", "expected": "e",
             "inputs_json": "{not json"}),
         "gave up"))
-    result, metrics = deep_generate_tests(IR, "1", [CONTRACT])
-
-    assert metrics["cases"] == 0, "a case with unparseable inputs_json was accepted"
+    with pytest.raises(DeepGenerationIncomplete):
+        deep_generate_tests(IR, "1", [CONTRACT])
 
 
 # --- Stage 2: proof generator -------------------------------------------------------
@@ -258,10 +293,10 @@ def test_planning_rejects_an_invented_fr_id(fake_llm):
     assert plans == {}, "an invented FR id was accepted"
 
 
-# --- wiring: the agents delegate when gen_driver="deepagent" -------------------------
+# --- wiring: the agents delegate to the deep drivers ---------------------------------
 def test_code_agent_delegates_to_the_deep_driver(monkeypatch):
-    """``--gen-driver deepagent`` must route CodeAgent.generate through the deep driver,
-    grouped per feature and preserving the planner's dependency order."""
+    """CodeAgent.generate routes through the deep driver — there is no other path — grouped
+    per feature and preserving the planner's dependency order."""
     from src.cleanroom.agents.code import agent as code_mod
 
     seen: list[list[str]] = []
@@ -276,7 +311,7 @@ def test_code_agent_delegates_to_the_deep_driver(monkeypatch):
         "planning": {"contracts": [
             dict(CONTRACT), dict(CONTRACT, fr_id="2.1", feature_id="2")]},
     }
-    code_mod.CodeAgent(llm=object(), gen_driver="deepagent").generate(ir)
+    code_mod.CodeAgent(llm=object()).generate(ir)
 
     assert seen == [["1.1"], ["2.1"]], "expected one deep invocation per feature, in order"
 
@@ -295,20 +330,62 @@ def test_code_agent_deep_driver_skips_proof_backed_features(monkeypatch):
         "planning": {"contracts": [
             dict(CONTRACT), dict(CONTRACT, fr_id="2.1", feature_id="2")]},
     }
-    code_mod.CodeAgent(llm=object(), gen_driver="deepagent").generate(
-        ir, skip_feature_ids={"2"})
+    code_mod.CodeAgent(llm=object()).generate(ir, skip_feature_ids={"2"})
 
     assert seen == [["1.1"]], "a skipped feature was still sent to the code agent"
 
 
-def test_deterministic_remains_the_default():
-    """Every recorded result was produced deterministically; the deep path must be opt-in."""
-    from src.cleanroom.agents.code.agent import CodeAgent
+def test_generation_is_deep_only():
+    """The deterministic generation arm is gone: there is no switch left to select it, and the
+    run report must say so, so an old `--gen-driver` invocation cannot silently mean something
+    other than what it used to."""
+    import argparse
+
     from src.cleanroom.config import RunConfig
 
-    assert RunConfig().gen_driver == "deterministic"
-    assert RunConfig().uses_deep_generation() is False
-    assert CodeAgent(llm=object()).gen_driver == "deterministic"
+    cfg = RunConfig()
+    assert not hasattr(cfg, "gen_driver"), "the generation driver switch is still selectable"
+    assert cfg.as_dict()["gen_driver"] == "deepagent"
+    # A stale --gen-driver in a script must not be silently honoured as a real choice.
+    assert not hasattr(RunConfig.from_args(argparse.Namespace(gen_driver="deterministic")),
+                       "gen_driver")
+
+
+def test_test_agent_delegates_to_the_deep_driver(monkeypatch):
+    """TestAgent.generate routes through the deep driver, one invocation per feature, briefed
+    with that feature's planner contracts."""
+    from src.cleanroom.agents.test import agent as test_mod
+
+    seen: list[tuple[str, list[str]]] = []
+    monkeypatch.setattr(
+        "src.cleanroom.agents.deep.generation.deep_generate_tests",
+        lambda ir, fid, contracts, **kw: (
+            seen.append((fid, [c["fr_id"] for c in contracts])), (None, {}))[1])
+    ir = {
+        "features": [{"id": "1", "name": "Search", "description": "d",
+                      "functional_requirements": [{"id": "1.1", "description": "d"}]}],
+        "planning": {"contracts": [dict(CONTRACT)]},
+    }
+    test_mod.TestAgent(llm=object()).generate(ir)
+
+    assert seen == [("1", ["1.1"])]
+
+
+def test_planning_agent_designs_through_the_deep_driver(monkeypatch):
+    """_design_feature has no structured-output path left; it must call the planning agent."""
+    from src.cleanroom.agents.planning.agent import PlanningAgent
+
+    seen: list[tuple[str, list[str]]] = []
+    monkeypatch.setattr(
+        "src.cleanroom.agents.deep.planning.deep_design_feature",
+        lambda name, fr_order, text_by_id, contracts_by_fr, **kw: (
+            seen.append((name, list(fr_order))), {})[1])
+
+    agent = PlanningAgent.__new__(PlanningAgent)      # skip __init__ (no LLM client wanted)
+    agent.stack = "python"
+    agent._design_feature("Search", ["1.1"], {"1.1": "search"}, {})
+
+    assert seen == [("Search", ["1.1"])]
 
 
 def test_empty_proof_returns_a_well_formed_feature(monkeypatch, tmp_path):
@@ -325,7 +402,6 @@ def test_empty_proof_returns_a_well_formed_feature(monkeypatch, tmp_path):
                           {"verify_calls": 0}))
 
     agent = dafny_mod.DafnyAgent.__new__(dafny_mod.DafnyAgent)   # skip __init__ scaffolding
-    agent.gen_driver = "deepagent"
     agent.model = "test"
     out = agent._generate_feature_deep({}, "1", "F1", tmp_path / "F1.dfy")
 

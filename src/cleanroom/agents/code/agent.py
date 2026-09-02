@@ -1,9 +1,10 @@
 """Code Agent.
 
-Generates MVC source code from the specification, walking the planner's per-FR
-CONTRACTS one at a time. One LLM call per contract, each scoped to ONLY that
-requirement's contract (signature + docstring + spec text) plus the *signatures* of
-its prerequisite contracts — never the whole IR, never any test artifact.
+Generates MVC source code from the specification. Generation is driven by a deepagents
+agent (``agents/deep/generation.py``): one agent per FEATURE, briefed with that feature's
+per-FR contract sheets in its own virtual filesystem, submitting each file through the
+validated ``submit_implementation`` tool. There is no single-shot "deterministic" driver
+any more — the agent path is the only path.
 
 ==================  STRUCTURAL ISOLATION (the project's core)  ==================
 This agent generates code as a pure function of the SPECIFICATION. By construction
@@ -14,6 +15,8 @@ it cannot receive anything from testing:
     spec-derived planning contracts).
   * There is no retry/debugging loop that regenerates code from test outcomes.
   * It never imports the test agent and never reads `generated_tests`.
+  * The generating agent runs on a StateBackend seeded with contract sheets and its own
+    /code pool only, so no test artifact exists in its filesystem to be found.
 
 Do not add a feedback path here, even to "improve" results — that isolation is the
 whole point of the pipeline.
@@ -73,12 +76,11 @@ def _extract_code_block(text: str) -> str:
 
 class CodeAgent:
     def __init__(self, llm=None, stack: str = "python", language: str = "python",
-                 prompt_strategy: str = "baseline", gen_driver: str = "deterministic") -> None:
-        # 'deepagent' routes generate() through agents/deep/generation.py. The deep driver's
-        # filesystem is seeded with contracts only — never tests — so isolation is unchanged.
-        self.gen_driver = gen_driver
+                 prompt_strategy: str = "baseline") -> None:
         # `llm` is injectable purely so tests can avoid network calls; it is NOT a
         # channel for test data. Defaults to the shared cost-control model client.
+        # NOTE: generate() does NOT use this client — the deep driver builds its own agent
+        # on get_llm(). It still backs the adapter and repair paths below.
         self.llm = llm if llm is not None else get_llm()
         self.renderer = PromptRenderer()
         # 'baseline' = original prompts; 'cot' = the parallel reason-first variants. CoT changes
@@ -99,9 +101,17 @@ class CodeAgent:
         the signature, docstring, mvc_layer, file_path and prerequisite ids of each FR;
         this agent only turns each contract into a concrete file body.
 
+        Generation runs ONE deepagents agent per FEATURE rather than per FR or all at once:
+        FRs in a feature share data shapes, so the agent can cross-read them and keep them
+        consistent, while a whole-IR invocation would blow past the context window on a large
+        SRS. Features keep their dependency order, so a later feature is still generated after
+        the ones it depends on.
+
         ``skip_feature_ids`` omits whole features whose logic ships from elsewhere (the Dafny
         proof tier): those features get an adapter via :meth:`generate_adapter` instead.
         """
+        from src.cleanroom.agents.deep.generation import deep_generate_code  # noqa: PLC0415
+
         contracts = (ir.get("planning") or {}).get("contracts")
         if not contracts:
             raise ValueError("CodeAgent requires an IR enriched with 'planning.contracts'.")
@@ -110,86 +120,6 @@ class CodeAgent:
         contracts = ir["planning"]["contracts"]
 
         skip = set(skip_feature_ids or ())
-        if getattr(self, "gen_driver", "deterministic") == "deepagent":
-            return self._generate_deep(ir, contracts, skip)
-
-        req_text = self._requirement_index(ir)        # fr_id -> spec requirement text
-        by_fr = {c["fr_id"]: c for c in contracts}     # fr_id -> contract (for prereq signatures)
-        files: list[GeneratedFile] = []
-
-        for contract in contracts:                     # already in dependency order
-            if contract["feature_id"] in skip:
-                continue
-            fr_id = contract["fr_id"]
-
-            # (a) ONLY this FR's contract + its spec text.
-            # (b) ONLY the signatures of prerequisite contracts — never their bodies,
-            #     and they are taken from the planner's contracts, not from any generated
-            #     code, so the input here is purely spec-derived.
-            prerequisites = prereq_ifaces(contract, by_fr)
-
-            prompt = self.renderer.render(
-                cot_template(self.target.code_template(), self.prompt_strategy),
-                {
-                    "fr_id": fr_id,
-                    "feature_id": contract["feature_id"],
-                    "mvc_layer": contract["mvc_layer"],
-                    "signature": contract["signature"],
-                    "docstring": contract["docstring"],
-                    "requirement": req_text.get(fr_id, ""),
-                    "prerequisites": prerequisites,
-                    "stack": self.stack,
-                    "route": _route_from_path(contract["file_path"]),
-                    "example_inputs_json": contract.get("example_inputs_json", "{}"),
-                    "expected_return_json": contract.get("expected_return_json", "null"),
-                    "error_mode": contract.get("error_mode", "raise"),
-                    "failure_inputs_json": contract.get("failure_inputs_json", ""),
-                    "entity_identifier": contract.get("entity_identifier", ""),
-                },
-            )
-
-            # One structured call per contract. Schema via with_structured_output —
-            # no JSON schema in the prompt.
-            # Resilience: the structured-output coercion returns None when a reply is unparseable —
-            # e.g. a verbose CoT/MoT reasoning prompt makes the model answer in prose + a fenced
-            # code block instead of a clean tool call. That is deterministic at temperature 0, so a
-            # plain retry would just reproduce it; instead fall back to a plain (non-structured)
-            # call and extract the source from the reply (a text reply IS the file content).
-            structured = self.llm.with_structured_output(FileImplementation)
-            impl: FileImplementation | None = structured.invoke(prompt)
-            if impl is None:
-                raw = self.llm.invoke(prompt)
-                raw_text = raw.content if isinstance(raw.content, str) else str(raw.content)
-                code = _extract_code_block(raw_text)
-                impl = FileImplementation(content=code) if code.strip() else None
-            if impl is None:
-                raise RuntimeError(
-                    f"code generation returned no parseable implementation for FR {fr_id}")
-
-            # The planner owns ids/path/layer; the LLM only supplies the body.
-            files.append(
-                GeneratedFile(
-                    fr_id=fr_id,
-                    feature_id=contract["feature_id"],
-                    path=contract["file_path"],
-                    mvc_layer=contract["mvc_layer"],
-                    content=impl.content,
-                )
-            )
-
-        return GeneratedCode(files=files)
-
-    def _generate_deep(self, ir: dict, contracts: list[dict], skip: set[str]) -> GeneratedCode:
-        """deepagents counterpart to :meth:`generate`, one agent per feature.
-
-        Per feature rather than per FR (as the deterministic loop does) or all at once: FRs in
-        a feature share data shapes, so the agent can cross-read them and keep them consistent,
-        while a whole-IR invocation would blow past the context window on a large SRS.
-        Features keep their dependency order, so a later feature is still generated after the
-        ones it depends on.
-        """
-        from src.cleanroom.agents.deep.generation import deep_generate_code  # noqa: PLC0415
-
         by_feature: dict[str, list[dict]] = {}
         for contract in contracts:                     # already in dependency order
             if contract["feature_id"] in skip:

@@ -110,15 +110,16 @@ message instead.
 
 ## Stage 1 — planning
 
-[`planning.py`](planning.py) is a drop-in for `PlanningAgent._design_feature`: same inputs,
-same `{fr_id: FRPlan}` return, so the caller's normalization, dedupe and docstring composition
-are untouched.
+[`planning.py`](planning.py) **is** `PlanningAgent._design_feature`: it returns the same
+`{fr_id: FRPlan}`, so the caller's normalization, dedupe and docstring composition are
+untouched.
 
-The substantive change is **per-FR submission**. The deterministic planner makes one
-`with_structured_output(FeaturePlan)` call per feature, so a single bad field fails the whole
-feature's output. The agent submits FRs one at a time through `submit_fr_plan`, and a
-rejection names the offending field so it can fix that one FR and resubmit. That matters much
-more on the smaller open-weight models we now self-host than it did on a frontier API.
+The substantive change over the single-call planner it replaced is **per-FR submission**. That
+planner made one `with_structured_output(FeaturePlan)` call per feature, so a single bad field
+failed the whole feature's output. The agent submits FRs one at a time through
+`submit_fr_plan`, and a rejection names the offending field so it can fix that one FR and
+resubmit. That matters much more on the smaller open-weight models we now self-host than it
+did on a frontier API.
 
 Validation goes beyond the schema: `_param_mismatch` rejects a plan whose `args_json` or
 `example_inputs_json` disagree with the signature's parameters. Three agents bind to that
@@ -129,8 +130,19 @@ mutually inconsistent artifacts.
 
 [`generation.py`](generation.py). Each is a separate top-level agent with its own
 `StateBackend`; identity fields (`fr_id`, `feature_id`, `path`, `mvc_layer`) always come from
-the planner's contract, and the agent authors **content only** — the same split the
-deterministic generators use.
+the planner's contract, and the agent authors **content only**.
+
+**Tool calling is the contract.** An artifact counts only when it arrives through a validated
+`submit_*` tool. The virtual filesystem is a scratchpad: a file the agent left at some path is
+not harvested, and a free-text reply is never scraped for a code fence. The submit tools are
+where the `fr_id` is checked against the requested set, emptiness is rejected and pydantic
+errors are handed back to be fixed — accepting an unsubmitted file would route around all of
+it, and would let a run whose tool calling silently failed still report artifacts, making
+`frs_submitted` a number that cannot be trusted. Code and test generation raise
+`DeepGenerationIncomplete` naming what is missing. The two exceptions are deliberate: the proof
+generator returns an empty source (an unproved feature is a recorded outcome, not a run
+failure), and planning leaves an unsubmitted FR absent (`PlanningAgent.plan` already has a
+documented degraded path — a default contract plus a recorded note).
 
 The proof generator optionally takes a `verifier` callable, letting the agent check its own
 Dafny and iterate. **This is not an isolation break:** the Dafny verifier is a proof checker
@@ -176,12 +188,16 @@ with no disk access at all.
 
 ### This fixed a real regression
 
-The deterministic `DafnyAgent` inlines `dafny-patterns.md` and `dafny-proofs.md` into **every**
-system prompt (`_build_system`). The deep proof driver built its own prompt and so had been
-running with **none of that tuned Dafny guidance** — a silent quality regression on the stage
-that needs help most, since Dafny is the lowest-resource language in the pipeline. Seeding
-them restores it, and progressively: ~4.5 KB of guidance is now read on demand rather than
-occupying the prompt on every call, which matters on a 32k context.
+The single-call `DafnyAgent` inlined `dafny-patterns.md` and `dafny-proofs.md` into **every**
+system prompt. The deep proof driver built its own prompt and so had been running with **none
+of that tuned Dafny guidance** — a silent quality regression on the stage that needs help most,
+since Dafny is the lowest-resource language in the pipeline. Seeding them restores it, and
+progressively: ~4.5 KB of guidance is now read on demand rather than occupying the prompt on
+every call, which matters on a 32k context.
+
+Those two documents are also hashed into `DafnyAgent._feature_sig`, alongside
+`generation.PROOF_PROMPT`, so editing the agent's briefing still invalidates every cached
+proof.
 
 ### The isolation risk skills DO carry
 
@@ -265,8 +281,15 @@ git config core.hooksPath .githooks
 | — | Isolation verification + CI | ✅ done |
 | 1 | Planning stage | ✅ done |
 | 2 | Code / Test / Proof generation | ✅ done |
-| — | Wiring into `run_pipeline` (`--gen-driver`) | ✅ done |
+| — | Wiring into `run_pipeline` | ✅ done — the only generation path |
 | — | Dependency stage | ⬜ left deterministic (see below) |
+
+**The migration is complete: there is no deterministic generation arm left.** Planning, code,
+test and proof always run as agents; `--gen-driver` and `RunConfig.gen_driver` are gone, and
+`deepagents` is a hard dependency of every run rather than an optional extra. The report still
+records `gen_driver: deepagent` so an artifact says which pipeline produced it. Runs recorded
+before this change came from the removed arm and are not comparable to new ones — reproducing
+them means checking out a commit that still has it.
 
 **Dependency analysis stays deterministic on purpose.** Its LLM use is one narrow call
 inferring semantic FR→FR edges; the rest is regex reference resolution and a topological sort.
@@ -275,20 +298,18 @@ An agent loop would add cost and nondeterminism to a stage that is mostly not a 
 ## Running it
 
 ```bash
-uv run python run_pipeline.py data/srs/Human.xml --gen-driver deepagent --prove --certify
+uv run python run_pipeline.py data/srs/Human.xml --prove --certify
 ```
 
-`--gen-driver` mirrors the existing `--repair-driver`:
+There is no generation-driver flag: planning, code, test and proof are always agents. The
+REPAIR loops still have a choice, and it is unaffected by this:
 
 | Flag | Stages affected |
 |---|---|
-| `--gen-driver {deterministic,deepagent}` | planning, code, test, proof |
 | `--repair-driver {deterministic,deepagent}` | compile-repair, recovery-regen |
 
-**`deterministic` stays the default.** Every recorded result was produced that way, so the
-deep path is opt-in and both arms remain runnable for comparison — which is what the paper
-needs. `gen_driver` is written into the run report next to `repair_driver`, so a run's arm is
-recoverable from its artifacts.
+Step budgets are the cost ceiling in place of a round count — see `deep_max_steps` and
+`CLEANROOM_DEEP_MAX_STEPS`.
 
 Delegation happens *inside* each agent (`CodeAgent.generate`, `TestAgent.generate`,
 `DafnyAgent.generate_feature`, `PlanningAgent._design_feature`) rather than at the pipeline
