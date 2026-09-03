@@ -1,6 +1,6 @@
 # Migration to deep agents — change log
 
-Branch `deep-agents-only`, 2026-09-02 → 09-03. Nine commits, 76 tests.
+Branch `deep-agents-only`, 2026-09-02 → 09-03. Twelve commits, 75 tests.
 
 Two things happened here. The pipeline moved to deepagents-only generation and lost the
 cot/mot dimension; and reviewing that move surfaced several defects, three of which it had
@@ -64,35 +64,21 @@ existed only to drive these arms and would now die on an unrecognised flag.
 archived run JSON, so the recorded CoT/MoT results stay readable even though the arms cannot
 be re-run. README RQ2 is marked retired rather than describing commands that no longer exist.
 
-## 4. Full-toolset exploratory arm — `1fcfceb`, `1313074`
+## 4. Full-toolset exploratory arm — added, then removed
 
-`--full-toolset`: the four generation stages as deepagents with the complete built-in toolset
-(`write_todos`, filesystem tools, shell `execute`) on one shared `LocalShellBackend`, plus
-per-agent tool-call counting — new information this arm exists to gather.
+`--full-toolset` ran the four generation stages on one shared `LocalShellBackend` with the
+complete built-in toolset including shell `execute`, plus per-agent tool-call counting.
+Removed at the user's request before ever being run (`1fcfceb`, `1313074` added it; a later
+commit removed it). Recoverable from git if the question comes back.
 
-Built by **substitution** (~150 lines) rather than forking `run_pipeline` (~1200): it swaps
-four seams and lets the rest run untouched, so every existing metric is computed identically
-and the arms are genuinely comparable, and the arm cannot drift out of sync with the pipeline.
-
-Lives in `src/cleanroom/experiments/` deliberately. `tests/test_isolation.py` fails the build
-if `FilesystemBackend`, `root_dir` or `subagents` appears in any `agents/deep/*.py`, and
-`LocalShellBackend` needs `root_dir` — keeping the arm additive means that guard goes on
-protecting the clean-room drivers, both arms stay runnable, and the default is unchanged.
-
-**This arm has no isolation, by design:** agents share a filesystem, so the test agent can read
-generated code. The caveat ships *inside the run report*, because the artifacts are otherwise
-indistinguishable from a clean-room run. The proof cache is namespaced so a cached clean-room
-proof cannot be served into it.
-
-`virtual_mode=True` is set explicitly — left `False`, deepagents documents that absolute paths
-and `..` bypass `root_dir`. It does **not** sandbox `execute`, which runs on the host as the
-invoking user.
-
-`1313074` then pulled Spec and Dependency back out. Both are deterministic-first — the SRS
-parse is pure XML reading, dependency resolution is regex plus a topological sort — wrapped
-around one narrow interpretive call each. An agent loop there adds cost and nondeterminism
-without a plausible payoff, and leaving them out means the arm varies only the four stages
-where the toolset could matter.
+Two things from it are worth remembering. The arm had **no isolation** by design — one shared
+filesystem means the test agent can read generated code — so it could never have produced
+evidence for independent derivation, only a methods observation. And the piece that had real
+standalone value was the **per-agent tool-call counting**: the clean-room arm still records
+only `agent_steps`, a single integer, and cannot say which tools an agent used. Porting that
+(~30 lines, works unchanged on `StateBackend` since the counts come off the assistant
+messages) would answer questions currently unanswerable — does the code agent cross-read
+`/code`, does planning read every sheet, does anything ever write to `/spec`.
 
 ## 5. Prompt fixes across the four deep agents — `ea8300b`
 
@@ -177,6 +163,18 @@ the proof prompt's content and the module mismatch was silent by construction. B
 tests.
 
 ---
+
+## Trust in recorded results
+
+Every run since `4fc0dd5` used the depleted prompts, as did any earlier run passing
+`--gen-driver deepagent`. On a FastAPI target that means the code agent emitted plain
+framework-free functions the packager cannot mount, and the test agent wrote direct-call
+ValueError cases against an HTTP app. Those are not marginal score differences — they are
+failures unrelated to the requirements. Decide which archived results remain citable before
+comparing anything new against them.
+
+Nothing in this branch has been validated against a real model. The prompts are verified only
+by scripted models and string assertions.
 
 ## Still open
 

@@ -456,12 +456,11 @@ def test_empty_proof_returns_a_well_formed_feature(monkeypatch, tmp_path):
 
 
 # --- prompt hygiene: gaps found reviewing the agents against deepagents usage ---------
-def test_every_prompt_renders_in_both_arms():
-    """A new placeholder must be supplied everywhere the prompt is formatted.
+def test_every_prompt_renders_for_every_stack():
+    """Every prompt must render with every placeholder, for each stack it branches on.
 
-    Adding `{max_steps}` broke the exploratory arm silently — it formats the same prompt
-    strings with its own roots, and nothing in the suite rendered them, so a KeyError would
-    only have surfaced mid-run.
+    A missing placeholder is a KeyError raised mid-run, after the spend that got there — the
+    prompts are formatted at agent-build time, not at import, so nothing else catches it.
     """
     from src.cleanroom.agents.deep.generation import CODE_PROMPT, PROOF_PROMPT, TEST_PROMPT
     from src.cleanroom.agents.deep.planning import PROMPT as PLANNING_PROMPT
