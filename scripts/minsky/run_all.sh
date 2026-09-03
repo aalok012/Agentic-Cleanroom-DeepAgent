@@ -15,7 +15,12 @@ cd "$(dirname "$0")/../.."
 SRS="${1:-data/srs/Human.xml}"
 LANG_="${2:-python}"
 MODEL_KEY="${MODEL_KEY:-qwen-coder}"
-OUT="${OUT:-results/new_feature_2026-08-26/raw_results/$(date +%Y%m%d-%H%M%S)}"
+# Where the experiment lands. RESULTS_DIR holds BOTH the per-run artifact tree and the
+# aggregated CSV; run artifacts use the matrix layout <lang>/<srs>/<model> that
+# scripts/collect_metrics.py derives language/srs/model from, so repeated runs accumulate
+# as separate rows in one CSV instead of overwriting each other.
+RESULTS_DIR="${RESULTS_DIR:-results/minsky_qwen3_2026-09-03}"
+CSV="${CSV:-$RESULTS_DIR/metrics.csv}"
 KEEP_SERVER="${KEEP_SERVER:-0}"    # 1 = leave the job running after the pipeline finishes
 
 command -v uv >/dev/null || { echo "ERROR: uv not found. Install it once with:"; \
@@ -73,10 +78,30 @@ LLM_API_KEY=EMPTY
 ENVEOF
 if [ -n "$TEMP" ]; then echo "CLEANROOM_LLM_TEMPERATURE=${TEMP}" >> .env; fi
 
+# Matrix cell: <results>/outputs/<language>/<srs_stem>/<model_safe>/ — the layout
+# collect_metrics.py reads the three identity columns out of. `/` and `.` are not safe in a
+# path component, so the model id is flattened the same way the existing CSVs have it
+# (Qwen/Qwen3-32B-AWQ -> Qwen_Qwen3-32B-AWQ).
+SRS_STEM="$(basename "$SRS")"; SRS_STEM="${SRS_STEM%.*}"
+MODEL_SAFE="$(printf '%s' "$MODEL" | tr '/.' '__')"
+OUT="${OUT:-$RESULTS_DIR/outputs/$LANG_/$SRS_STEM/$MODEL_SAFE}"
+
 echo "── running pipeline: $SRS ($LANG_) → $OUT"
 mkdir -p "$OUT"
+# Don't let a mid-pipeline failure skip the collection: run_record.py still writes a run
+# JSON for a failed/partial run, and that row is data too. Report the real status at the end.
+PIPE_RC=0
 uv run python run_pipeline.py "$SRS" \
   --language "$LANG_" \
-  --prove --certify --output-dir "$OUT"
+  --prove --certify --output-dir "$OUT" || PIPE_RC=$?
+[ "$PIPE_RC" -eq 0 ] || echo "!! pipeline exited $PIPE_RC — collecting whatever it recorded"
 
-echo "── done. Artifacts in $OUT"
+# Aggregate into the CSV. --append keeps rows from earlier runs (other SRS/model cells) and
+# only updates this cell, so the file survives across the qwen3 / qwen-coder / r1-distill arms.
+echo "── collecting metrics → $CSV"
+uv run python scripts/collect_metrics.py --root "$RESULTS_DIR/outputs" --out "$CSV" --append
+
+echo "── done."
+echo "   artifacts : $OUT"
+echo "   metrics   : $CSV"
+exit "$PIPE_RC"
