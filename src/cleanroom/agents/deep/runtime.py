@@ -180,6 +180,25 @@ def invoke_agent(agent, prompt: str, files: dict[str, Any], *, max_steps: int | 
     )
 
 
+def nudge_agent(agent, state: dict, message: str, *, max_steps: int | None = None) -> dict:
+    """Continue a finished agent conversation with one more user turn.
+
+    An agent sometimes ends its turn by DESCRIBING what it did instead of making the tool call
+    that actually delivers it — writing "the implementation has been submitted" without calling
+    the submit tool. Measured on Qwen3-32B-AWQ that happens on roughly half of invocations, and
+    it is not a temperature artifact: it occurs at 0 as well, because vLLM's continuous batching
+    makes even greedy decoding non-reproducible.
+
+    The agent is one message away from finishing in that state, so ask it rather than throwing
+    the whole run away. Full prior state (messages + files) is passed back, so the retry costs
+    only the new turn.
+    """
+    return agent.invoke(
+        {**state, "messages": list(state.get("messages") or []) + [{"role": "user", "content": message}]},
+        {"recursion_limit": max_steps or deep_max_steps()},
+    )
+
+
 def final_files(state: dict) -> dict[str, str]:
     """``{virtual_path: content}`` from a finished agent state."""
     return {path: (data or {}).get("content", "")

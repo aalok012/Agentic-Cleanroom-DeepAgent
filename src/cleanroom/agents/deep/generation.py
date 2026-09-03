@@ -71,6 +71,7 @@ from src.cleanroom.agents.deep.runtime import (
     build_agent,
     deep_max_steps,
     invoke_agent,
+    nudge_agent,
     load_skills,
     seed_files,
     skill_index,
@@ -231,6 +232,17 @@ you have — an unsubmitted FR is a failed one, and a rough implementation beats
 """
 
 
+_SUBMIT_RETRIES = 2
+
+
+def _missing_nudge(missing: list[str], tool_name: str) -> str:
+    """The follow-up turn for an agent that finished without delivering everything."""
+    return (f"You have not delivered {len(missing)} item(s): {', '.join(missing)}. "
+            f"Describing the work is not delivering it — only a `{tool_name}` tool call counts, "
+            f"and nothing you wrote to the filesystem is collected. "
+            f"Call `{tool_name}` now for each one listed, with its complete content.")
+
+
 def deep_generate_code(
     ir: dict,
     contracts: list[dict],
@@ -302,6 +314,19 @@ def deep_generate_code(
 
     # Submitted content ONLY — the /code files the agent drafted into are a scratchpad and are
     # deliberately not harvested. See "TOOL CALLING IS THE CONTRACT" in the module docstring.
+    #
+    # An agent that stops one message short of the contract — writing "the implementation has
+    # been submitted" instead of calling submit_implementation — is not a failed run, it is an
+    # unfinished one. Ask it to finish before giving up: cheaper than losing every other stage,
+    # and it does not weaken the contract, because the artifact still has to arrive through the
+    # validated tool.
+    for _ in range(_SUBMIT_RETRIES):
+        missing = sorted(known - set(submitted))
+        if not missing:
+            break
+        state = nudge_agent(agent, state, _missing_nudge(missing, "submit_implementation"),
+                            max_steps=steps)
+
     missing = sorted(known - set(submitted))
     if missing:
         raise DeepGenerationIncomplete(
@@ -513,6 +538,15 @@ def deep_generate_tests(
                f"Their contract sheets are in {SPEC_ROOT}/. Write the file to {source_path}.")
 
     state = invoke_agent(agent, opening, seed_files(seeds), max_steps=steps)
+
+    # Same one-message-short recovery as the code agent: ask before discarding the run.
+    for _ in range(_SUBMIT_RETRIES):
+        gaps = ([] if source.get("src", "").strip() else ["the test source"]) + \
+               [f"a case for FR {fr}" for fr in sorted(known - {c.requirement_id for c in cases})]
+        if not gaps:
+            break
+        state = nudge_agent(agent, state, _missing_nudge(gaps, "submit_test_case/submit_test_source"),
+                            max_steps=steps)
 
     # Submitted content ONLY — see "TOOL CALLING IS THE CONTRACT" in the module docstring.
     test_source = source.get("src", "")
@@ -735,6 +769,16 @@ def deep_generate_dafny(
                f"but deliver the module with submit_dafny.")
 
     state = invoke_agent(agent, opening, seed_files(seeds), max_steps=steps)
+
+    # A proof agent that reasoned its way to a module and then narrated instead of calling
+    # submit_dafny leaves 0 bytes behind — observed twice on Qwen3. Ask once before accepting
+    # the empty result; unlike code/tests there is no exception to fall back on, the feature
+    # just silently scores unproved.
+    for _ in range(_SUBMIT_RETRIES):
+        if submitted.get("source", "").strip():
+            break
+        state = nudge_agent(agent, state, _missing_nudge([f"module {module}"], "submit_dafny"),
+                            max_steps=steps)
 
     # Submitted content ONLY — see "TOOL CALLING IS THE CONTRACT" in the module docstring.
     # Unlike code and tests this does NOT raise: an unproved feature is a legitimate outcome the
