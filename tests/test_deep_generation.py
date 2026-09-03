@@ -179,13 +179,56 @@ def test_test_generator_rejects_malformed_inputs_json(fake_llm):
 def test_proof_generator_records_a_module(fake_llm):
     from src.cleanroom.agents.deep.generation import deep_generate_dafny
 
+    src = "module Feature_1Domain refines Domain { }"
     fake_llm(probe(
-        ("submit_dafny", {"module": "Feature_1", "source": "module Feature_1 { }"}),
+        ("submit_dafny", {"module_name": "Feature_1", "source": src}),
         "proved"))
     out, metrics = deep_generate_dafny(IR, "1", [CONTRACT])
 
-    assert out["module"] == "Feature_1" and "module Feature_1" in out["source"]
+    assert out["module"] == "Feature_1" and "Feature_1Domain" in out["source"]
     assert metrics["has_source"] and metrics["verify_calls"] == 0
+
+
+def test_proof_generator_rejects_a_renamed_module(fake_llm):
+    """The file name, the proved-module record and the adapter's `<mod>Domain` import all key
+    off this name, so a module the agent renamed must be refused, not silently overwritten."""
+    from src.cleanroom.agents.deep.generation import deep_generate_dafny
+
+    good = "module F9_9Domain refines Domain { }"
+    fake_llm(probe(
+        ("submit_dafny", {"module_name": "WhateverILike",
+                          "source": "module WhateverILikeDomain refines Domain { }"}),
+        ("submit_dafny", {"module_name": "F9_9", "source": good}),
+        "renamed it"))
+    out, _ = deep_generate_dafny(IR, "9.9", [CONTRACT], module="F9_9")
+
+    assert out["module"] == "F9_9", "a renamed module was accepted"
+    assert out["source"] == good
+
+
+def test_proof_generator_requires_the_kernel_refinement(fake_llm):
+    """A proof that verifies but does not refine the kernel is useless downstream: the
+    packager compiles out/<mod>-py/ and the adapter imports <mod>Domain."""
+    from src.cleanroom.agents.deep.generation import deep_generate_dafny
+
+    fake_llm(probe(
+        ("submit_dafny", {"module_name": "F1", "source": "lemma Trivial() ensures true {}"}),
+        "gave up"))
+    out, _ = deep_generate_dafny(IR, "1", [CONTRACT], module="F1")
+
+    assert out["source"] == "", "a module with no <mod>Domain refinement was accepted"
+
+
+def test_proof_prompt_states_the_kernel_contract():
+    """This briefing used to reach the model through DafnyAgent's own prompt. That prompt was
+    deleted with the deterministic driver, taking the only statement of the kernel contract
+    with it — nothing else names the required members."""
+    from src.cleanroom.agents.deep.generation import PROOF_PROMPT
+
+    for required in ('include "Replay.dfy"', "refines Domain", "refines Kernel", "datatype Action",
+                     "ghost predicate Inv", "function Normalize", "InitSatisfiesInv",
+                     "StepPreservesInv"):
+        assert required in PROOF_PROMPT, f"the proof prompt no longer states {required!r}"
 
 
 def test_proof_generator_uses_the_verifier_when_given_one(fake_llm):
@@ -202,9 +245,10 @@ def test_proof_generator_uses_the_verifier_when_given_one(fake_llm):
     fake_llm(probe(
         ("dafny_verify", {"source": "module F { }"}),
         ("dafny_verify", {"source": "module F { /* fixed */ }"}),
-        ("submit_dafny", {"module": "F", "source": "module F { /* fixed */ }"}),
+        ("submit_dafny", {"module_name": "F",
+                          "source": "module FDomain refines Domain { /* fixed */ }"}),
         "verified"))
-    out, metrics = deep_generate_dafny(IR, "1", [CONTRACT], verifier=verifier)
+    out, metrics = deep_generate_dafny(IR, "1", [CONTRACT], module="F", verifier=verifier)
 
     assert len(calls) == 2
     assert metrics["verify_calls"] == 2 and metrics["verified"] is True
@@ -220,9 +264,9 @@ def test_proof_generator_survives_a_broken_verifier(fake_llm):
 
     fake_llm(probe(
         ("dafny_verify", {"source": "module F { }"}),
-        ("submit_dafny", {"module": "F", "source": "module F { }"}),
+        ("submit_dafny", {"module_name": "F", "source": "module FDomain refines Domain { }"}),
         "submitted anyway"))
-    out, metrics = deep_generate_dafny(IR, "1", [CONTRACT], verifier=verifier)
+    out, metrics = deep_generate_dafny(IR, "1", [CONTRACT], module="F", verifier=verifier)
 
     assert out["source"], "a broken verifier lost the agent's work"
     assert metrics["verified"] is False
@@ -403,6 +447,7 @@ def test_empty_proof_returns_a_well_formed_feature(monkeypatch, tmp_path):
 
     agent = dafny_mod.DafnyAgent.__new__(dafny_mod.DafnyAgent)   # skip __init__ scaffolding
     agent.model = "test"
+    agent.dafny_dir = tmp_path        # _abstract_domain() reads Replay.dfy from here
     out = agent._generate_feature_deep({}, "1", "F1", tmp_path / "F1.dfy")
 
     assert out.verified is False and out.dafny_source == ""
@@ -426,7 +471,7 @@ def test_every_prompt_renders_in_both_arms():
     TEST_PROMPT.format(language="Python", spec_root="/spec", test_root="/tests",
                        skills_block="", max_steps=90)
     PROOF_PROMPT.format(spec_root="/spec", proof_root="/proof", verify_note="",
-                        skills_block="", max_steps=90)
+                        skills_block="", max_steps=90, module="F1_1", domain="abstract module D")
     PLANNING_PROMPT.format(spec_root="/spec", max_steps=90)
 
 

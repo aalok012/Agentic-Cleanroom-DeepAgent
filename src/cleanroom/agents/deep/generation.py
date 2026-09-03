@@ -466,11 +466,34 @@ You will NEVER be given the implementation or the test suite. Both are derived i
 from the same contracts, and neither exists in your filesystem — do not look for them. Your
 proof must follow from the SPECIFICATION alone.
 
+You are not writing free-standing Dafny. The module REFINES a vendored kernel, and the rest of
+the pipeline compiles and imports it by that structure — a proof that verifies but does not
+refine the kernel is useless downstream. Write exactly one file that:
+
+* starts with `include "Replay.dfy"`;
+* defines `module {module}Domain refines Domain {{ ... }}` containing a concrete `type Model`,
+  a `datatype Action` with ONE variant per FR, a `ghost predicate Inv`, `function Init`,
+  `function Apply` (one match case per Action — NO `requires`), and `function Normalize`
+  (repairs a Model so Inv holds);
+* proves lemmas `InitSatisfiesInv` and `StepPreservesInv` (NO `requires` — both are inherited
+  from the abstract Domain, and repeating them is an ERROR);
+* proves at least one domain-specific lemma whose `ensures` matches a postcondition from the
+  contract sheets;
+* defines `module {module}Kernel refines Kernel {{ import D = {module}Domain }}`.
+
+Use those module names EXACTLY — `{module}Domain` and `{module}Kernel`. The adapter that ships
+this proof imports them by name.
+
+=== THE ABSTRACT DOMAIN YOU ARE REFINING (do not redefine it) ===
+{domain}
+
 Rules:
-* Model the requirement's behaviour as Dafny functions/methods with `requires` and `ensures`
-  that state the contract's preconditions and postconditions.
+* Model the requirement's behaviour with `requires`/`ensures` that state the contract's
+  preconditions and postconditions.
 * The error mode matters: a "raise" contract means the precondition belongs in `requires`.
 * Prove what you specify. A method whose `ensures` is trivially true is worth nothing.
+* `/skills/dafny-patterns.md` has a complete worked example of this exact structure. Read it
+  before writing — the shape is easy to get subtly wrong and the verifier is unforgiving.
 {verify_note}
 Submit with `submit_dafny(module=..., source=...)` giving the COMPLETE module source. This
 tool call is the ONLY way to deliver the module: a draft left in {proof_root}/ is NOT collected,
@@ -493,6 +516,8 @@ def deep_generate_dafny(
     feature_id: str,
     contracts: list[dict],
     *,
+    module: str | None = None,
+    domain: str = "",
     verifier=None,
     temperature: float = 0.0,
     model: str | None = None,
@@ -516,7 +541,10 @@ def deep_generate_dafny(
     # deep path seeds them instead, so the agent pays for them only when it reads them.
     skills = load_skills(["dafny-proofs", "dafny-patterns"])
     seeds.update(skills)
-    module = f"Feature_{str(feature_id).replace('.', '_')}"
+    # The CALLER owns this name. DafnyAgent writes the file as <mod>.dfy, records it as the
+    # feature's proved module, and the packager compiles out/<mod>-py/ while the adapter imports
+    # <mod>Domain — so a name invented here would disagree with every one of them.
+    module = module or f"Feature_{str(feature_id).replace('.', '_')}"
     draft_path = virtual_path(PROOF_ROOT, 0, f"{module}.dfy")   # a drafting path, not an output
     # Not pre-seeded — see the note in deep_generate_code.
     # No CODE_ROOT and no TEST_ROOT entry. See the module docstring.
@@ -526,15 +554,24 @@ def deep_generate_dafny(
 
     @tool
     def submit_dafny(
-        module: Annotated[str, "The Dafny module name."],
+        module_name: Annotated[str, "The Dafny module base name — must match the one you were given."],
         source: Annotated[str, "The COMPLETE Dafny module source."],
     ) -> str:
         """Record the finished Dafny module for this feature."""
         if not (source or "").strip():
             return "Rejected: source was empty."
-        submitted["module"] = module
+        # Reject a renamed module rather than accept it and let DafnyAgent silently overwrite
+        # the name: the file, the proved-module record and the adapter's import all key off it.
+        if module_name.strip() != module:
+            return (f"Rejected: this feature's module must be named {module!r}, not "
+                    f"{module_name!r}. The adapter imports {module}Domain by name. Rename it "
+                    f"in the source and resubmit.")
+        if f"module {module}Domain" not in source:
+            return (f"Rejected: the source does not define `module {module}Domain refines "
+                    f"Domain`. See /skills/dafny-patterns.md for the required structure.")
+        submitted["module"] = module_name
         submitted["source"] = source
-        return f"Recorded module {module} ({len(source.splitlines())} lines)."
+        return f"Recorded module {module_name} ({len(source.splitlines())} lines)."
 
     tools = [submit_dafny]
     verify_note = ""
@@ -560,7 +597,9 @@ def deep_generate_dafny(
     steps = max_steps or (deep_max_steps() + 12 * len(contracts))
     agent = build_agent(
         tools,
-        PROOF_PROMPT.format(spec_root=SPEC_ROOT, proof_root=PROOF_ROOT,
+        PROOF_PROMPT.format(spec_root=SPEC_ROOT, proof_root=PROOF_ROOT, module=module,
+                            domain=domain or "(the kernel source was not available; follow "
+                                             "/skills/dafny-patterns.md exactly)",
                             verify_note=verify_note, skills_block=_skills_block(skills),
                             max_steps=steps),
         temperature=temperature, model=model, name="proof")

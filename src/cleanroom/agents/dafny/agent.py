@@ -98,6 +98,19 @@ class DafnyAgent:
         except Exception:
             pass   # caching is a best-effort optimization; never fail the proof on a cache write
 
+    def _abstract_domain(self) -> str:
+        """The abstract ``Domain`` from the vendored kernel, for the proof agent to refine.
+
+        Everything up to the ``Kernel`` declaration — the same slice the removed
+        ``_build_system`` inlined into every proof prompt. Missing/unreadable is not fatal:
+        the prompt falls back to pointing at the worked example in the skill document.
+        """
+        try:
+            return (self.dafny_dir / "Replay.dfy").read_text().split(
+                "abstract module {:compile false} Kernel")[0]
+        except OSError:
+            return ""
+
     def generate_feature(self, ir: dict, feature_id: str) -> FeatureDafny:
         mod = _mod_name(feature_id)
         target = self.dafny_dir / f"{mod}.dfy"
@@ -122,8 +135,13 @@ class DafnyAgent:
             res = verify_dafny(target)
             return res.ok, "\n".join(res.messages or [])
 
+        # Pass OUR module name and the abstract kernel the module must refine. Both used to
+        # reach the model through the deterministic prompt this class no longer has; without
+        # them the agent invents a name and may not refine Replay.dfy at all, and the adapter
+        # that imports <mod>Domain has nothing to bind to.
         out, metrics = deep_generate_dafny(
-            ir, feature_id, contracts, verifier=verifier, model=self.model)
+            ir, feature_id, contracts, module=mod, domain=self._abstract_domain(),
+            verifier=verifier, model=self.model)
 
         code = out.get("source") or ""
         if not code.strip():

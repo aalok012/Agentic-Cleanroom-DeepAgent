@@ -324,15 +324,15 @@ def generate_dafny(root: Path, ir: dict, feature_id: str, contracts: list[dict],
 
     @tool
     def submit_dafny(
-        module: Annotated[str, "The Dafny module name."],
+        module_name: Annotated[str, "The Dafny module base name — must match the one you were given."],
         source: Annotated[str, "The COMPLETE Dafny module source."],
     ) -> str:
         """Record the finished Dafny module for this feature."""
         if not (source or "").strip():
             return "Rejected: source was empty."
-        submitted["module"] = module
+        submitted["module"] = module_name
         submitted["source"] = source
-        return f"Recorded module {module} ({len(source.splitlines())} lines)."
+        return f"Recorded module {module_name} ({len(source.splitlines())} lines)."
 
     tools = [submit_dafny]
     verify_note = ""
@@ -357,7 +357,8 @@ def generate_dafny(root: Path, ir: dict, feature_id: str, contracts: list[dict],
     steps = full_toolset_max_steps() + 12 * len(contracts)
     agent = build_full_agent(
         tools,
-        PROOF_PROMPT.format(spec_root=SPEC_DIR, proof_root=PROOF_DIR,
+        PROOF_PROMPT.format(spec_root=SPEC_DIR, proof_root=PROOF_DIR, module=module,
+                            domain="(see /skills/dafny-patterns.md for the kernel structure)",
                             verify_note=verify_note, max_steps=steps,
                             skills_block=_skills_block(skills)) + _SHELL_NOTE,
         _backend_for(root), name="proof", model=model)
