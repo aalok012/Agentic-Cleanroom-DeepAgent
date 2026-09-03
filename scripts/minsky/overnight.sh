@@ -29,6 +29,10 @@ PIPELINE_FLAGS="${PIPELINE_FLAGS:---prove --certify}"
 
 STAMP=$(date +%Y%m%d-%H%M%S)
 RESULTS="${RESULTS:-results/new_feature_2026-08-26/raw_results/batch-$STAMP}"
+# Aggregated metrics for the batch, in the schema every earlier experiment CSV uses
+# (scripts/collect_metrics.py). Defaults inside the batch dir; point CSV at a shared file to
+# accumulate across batches.
+CSV="${CSV:-$RESULTS/metrics.csv}"
 mkdir -p "$RESULTS"
 SUMMARY="$RESULTS/summary.tsv"
 printf 'srs\tarm\tstatus\tseconds\toutput\n' > "$SUMMARY"
@@ -75,7 +79,7 @@ ensure_server() {
           echo "LLM_BASE_URL=http://$node:$port/v1"
           echo "LLM_MODEL=$model"
           echo "LLM_API_KEY=EMPTY"
-          [ "$MODEL_KEY" = "r1-distill" ] && echo "CLEANROOM_LLM_TEMPERATURE=0.6"
+          case "$MODEL_KEY" in r1-distill|qwen3) echo "CLEANROOM_LLM_TEMPERATURE=0.6" ;; esac
         } > .env
         log "  server up on $node:$port ($model)"
         return 0
@@ -128,5 +132,12 @@ for srs in "${SRS_LIST[@]}"; do
   done
 done
 
+# Aggregate into the CSV. --append so a shared CSV keeps rows from earlier batches; runs that
+# timed out or crashed still recorded a run JSON and land here too.
+log "collecting metrics -> $CSV"
+mkdir -p "$(dirname "$CSV")"
+uv run python scripts/collect_metrics.py --root "$RESULTS" --out "$CSV" --append 2>&1 | tee -a "$RESULTS/batch.log"
+
 log "batch finished"
 column -t "$SUMMARY" 2>/dev/null || cat "$SUMMARY"
+log "metrics -> $CSV"
