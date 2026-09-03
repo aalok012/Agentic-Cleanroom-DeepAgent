@@ -80,7 +80,7 @@ class TestAgent:
             feature_id = str(unit["feature_id"])
             result, _metrics = deep_generate_tests(
                 ir, feature_id, contracts_by_feature.get(feature_id, []),
-                language=self.language)
+                language=self.language, stack=self.stack)
             if result is not None:
                 features.append(result)
 

@@ -468,8 +468,12 @@ def test_every_prompt_renders_in_both_arms():
 
     CODE_PROMPT.format(language="Python", spec_root="/spec", code_root="/code",
                        skills_block="", max_steps=90)
-    TEST_PROMPT.format(language="Python", spec_root="/spec", test_root="/tests",
-                       skills_block="", max_steps=90)
+    from src.cleanroom.agents.deep.generation import test_stack_block
+
+    for stack in ("python", "fastapi"):
+        TEST_PROMPT.format(language="Python", spec_root="/spec", test_root="/tests",
+                           skills_block="", max_steps=90,
+                           stack_block=test_stack_block(stack))
     PROOF_PROMPT.format(spec_root="/spec", proof_root="/proof", verify_note="",
                         skills_block="", max_steps=90, module="F1_1", domain="abstract module D")
     PLANNING_PROMPT.format(spec_root="/spec", max_steps=90)
@@ -529,3 +533,42 @@ def test_entity_identifier_must_be_a_key_of_example_inputs():
     assert "entity_identifier" in _param_mismatch(sig, plan("not_a_field"))
     assert _param_mismatch(sig, plan("name")) == ""
     assert _param_mismatch(sig, plan("")) == "", "an empty entity_identifier is legitimate"
+
+
+def test_test_prompt_is_stack_aware():
+    """The old template branched on stack: a FastAPI run is an HTTP app, so a failure is a 4xx
+    and the suite must drive it with TestClient. The deep path passed only `language`, so the
+    agent wrote direct-call ValueError tests against a web app — every one of which fails a
+    correct implementation."""
+    from src.cleanroom.agents.deep.generation import TEST_PROMPT, test_stack_block
+
+    fastapi = TEST_PROMPT.format(language="Python", spec_root="/spec", test_root="/tests",
+                                 skills_block="", max_steps=90,
+                                 stack_block=test_stack_block("fastapi"))
+    plain = TEST_PROMPT.format(language="Python", spec_root="/spec", test_root="/tests",
+                               skills_block="", max_steps=90,
+                               stack_block=test_stack_block("python"))
+
+    assert '{"raises": "HTTPException"}' in fastapi
+    assert "TestClient" in fastapi and "status_code >= 400" in fastapi
+    assert "database starts EMPTY" in fastapi, "setup guidance for a stateful app is missing"
+    assert "TestClient" not in plain and "ValueError" in plain
+
+
+def test_test_agent_passes_its_stack_to_the_driver(monkeypatch):
+    """TestAgent.stack is documented as shaping the emitted module and the failure oracle; it
+    has to actually reach the driver for that to be true."""
+    from src.cleanroom.agents.test import agent as test_mod
+
+    seen: list[str] = []
+    monkeypatch.setattr(
+        "src.cleanroom.agents.deep.generation.deep_generate_tests",
+        lambda ir, fid, contracts, **kw: (seen.append(kw.get("stack")), (None, {}))[1])
+    ir = {
+        "features": [{"id": "1", "name": "Search", "description": "d",
+                      "functional_requirements": [{"id": "1.1", "description": "d"}]}],
+        "planning": {"contracts": [dict(CONTRACT)]},
+    }
+    test_mod.TestAgent(llm=object(), stack="fastapi").generate(ir)
+
+    assert seen == ["fastapi"], "the run's stack never reached the test agent"

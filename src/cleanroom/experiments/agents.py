@@ -30,6 +30,7 @@ from src.cleanroom.agents.deep.generation import (
     PROOF_PROMPT,
     TEST_PROMPT,
     contract_sheet,
+    test_stack_block,
 )
 from src.cleanroom.agents.deep.planning import PROMPT as PLANNING_PROMPT
 from src.cleanroom.agents.deep.planning import _spec_sheet
@@ -229,7 +230,8 @@ def generate_code(root: Path, ir: dict, contracts: list[dict], log: RunLog,
 
 
 def generate_tests(root: Path, ir: dict, feature_id: str, contracts: list[dict], log: RunLog,
-                   *, language: str = "Python", model: str | None = None) -> FeatureTests | None:
+                   *, language: str = "Python", stack: str = "python",
+                   model: str | None = None) -> FeatureTests | None:
     """Black-box suite for one feature. NOTE: in this arm the code is on the same disk."""
     if not contracts:
         return None
@@ -288,7 +290,8 @@ def generate_tests(root: Path, ir: dict, feature_id: str, contracts: list[dict],
     agent = build_full_agent(
         [submit_test_case, submit_test_source],
         TEST_PROMPT.format(language=language, spec_root=SPEC_DIR, test_root=TEST_DIR,
-                           skills_block=_skills_block(skills), max_steps=steps) + _SHELL_NOTE,
+                           skills_block=_skills_block(skills), max_steps=steps,
+                           stack_block=test_stack_block(stack)) + _SHELL_NOTE,
         _backend_for(root), name="test", model=model)
     state, secs = invoke_full(
         agent,

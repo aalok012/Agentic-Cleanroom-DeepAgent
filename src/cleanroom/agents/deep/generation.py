@@ -331,8 +331,8 @@ Rules:
   the contract does not specify. If you cannot express a check from the contract alone, it
   does not belong in the suite.
 * Cover the happy path, the documented failure case, and any boundary the contract implies.
-* `oracle="eq"` asserts a returned value; `oracle="raises"` asserts a ValueError.
-
+* `oracle="eq"` asserts a returned value; `oracle="raises"` asserts a failure.
+{stack_block}
 For each case call `submit_test_case(...)`. When every case is recorded, call
 `submit_test_source(...)` with the complete runnable test file. These two tool calls are the
 ONLY way to deliver the suite: a file left in {test_root}/ is NOT collected, and you are not
@@ -356,6 +356,7 @@ def deep_generate_tests(
     contracts: list[dict],
     *,
     language: str = "Python",
+    stack: str = "python",
     temperature: float = 0.0,
     model: str | None = None,
     max_steps: int | None = None,
@@ -421,9 +422,20 @@ def deep_generate_tests(
     agent = build_agent(
         [submit_test_case, submit_test_source],
         TEST_PROMPT.format(language=language, spec_root=SPEC_ROOT, test_root=TEST_ROOT,
-                           skills_block=_skills_block(skills), max_steps=steps),
+                           skills_block=_skills_block(skills), max_steps=steps,
+                           stack_block=test_stack_block(stack)),
         temperature=temperature, model=model, name="test")
-    listing = "\n".join(f"- FR {c['fr_id']}: {c.get('signature', '')}" for c in contracts)
+    if stack == "fastapi":
+        # The endpoint is derived from file_path, which the contract sheet does not carry, so
+        # the agent cannot work it out from its filesystem alone.
+        listing = "\n".join(
+            f"- FR {c['fr_id']}: {c.get('signature', '')}\n"
+            f"    endpoint: POST /{(c.get('file_path') or '').removesuffix('.py').strip('/')}"
+            + (f"\n    entity identifier: {c['entity_identifier']}"
+               if c.get("entity_identifier") else "")
+            for c in contracts)
+    else:
+        listing = "\n".join(f"- FR {c['fr_id']}: {c.get('signature', '')}" for c in contracts)
     opening = (f"Write black-box tests for feature {feature_id}, covering these "
                f"{len(contracts)} functional requirement(s):\n{listing}\n\n"
                f"Their contract sheets are in {SPEC_ROOT}/. Write the file to {source_path}.")
@@ -452,6 +464,47 @@ def deep_generate_tests(
 # --------------------------------------------------------------------------------------
 # Proof Agent — sees contracts. Never code, never tests.
 # --------------------------------------------------------------------------------------
+
+_TEST_STACK_PLAIN = """\
+* This target calls the functions DIRECTLY. `oracle="raises"` means a `ValueError`, and
+  `expected_json` is ignored for those cases.
+* `test_source` is a plain pytest module that imports each FR's function and calls it:
+  `with pytest.raises(ValueError): func(**inputs)` for a failure case.
+* `setup_json` is a list of prior CALLS needed to reach the state under test. Keep it minimal.
+"""
+
+_TEST_STACK_FASTAPI = """\
+* This target is a REAL FastAPI web app, not a set of importable functions. Each FR is an HTTP
+  endpoint at `POST /<its file_path without .py>`, taking the canonical inputs as a JSON body.
+* For a failure case set `expected_json` to `{"raises": "HTTPException"}` — a precondition
+  violation surfaces as a 4xx response, NOT a ValueError.
+* SETUP MATTERS: the app's database starts EMPTY. A case that edits, deletes, cancels or reads
+  an entity MUST first create it through `setup_json` — a JSON array of prior calls replayed
+  against the same database, each `{"inputs": <body-object>}` (add `"route": "<endpoint>"`
+  only to hit a different FR's endpoint). The seed call and the main call MUST use the SAME
+  value for the requirement's entity identifier, or the lookup finds nothing and a correct
+  implementation fails your test. Leave it empty for pure-create cases, and for a "raises" case
+  that expects "not found" — that one must NOT create the entity it looks up.
+* `test_source` must drive the app over HTTP with TestClient — do NOT import or call the route
+  functions directly; they are FastAPI endpoints with Body params, not plain functions.
+  Header: `import json`, `from fastapi.testclient import TestClient`, `from app import
+  create_app`. Build ONE client at module level: `client = TestClient(create_app())`. For a
+  "raises" case assert `resp.status_code >= 400`. Standard library + pytest + fastapi only.
+"""
+
+TEST_STACK_BLOCKS = {"fastapi": _TEST_STACK_FASTAPI}
+
+
+def test_stack_block(stack: str) -> str:
+    """Stack-specific test guidance — how a case is DRIVEN, not what the code does.
+
+    Knowing the target is a web app rather than a module is structural, not seeing the
+    implementation, so this preserves isolation exactly as the Code and Planning agents'
+    stack awareness does. Without it the agent writes direct-call tests and ValueError
+    expectations against an HTTP app, and every one of them fails a correct implementation.
+    """
+    return TEST_STACK_BLOCKS.get(stack, _TEST_STACK_PLAIN)
+
 
 PROOF_PROMPT = """\
 You are the proof agent in a CLEAN-ROOM pipeline. You write DAFNY that specifies and proves

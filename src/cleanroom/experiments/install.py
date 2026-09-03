@@ -66,9 +66,10 @@ def install_full_toolset(root: Path, log: RunLog | None = None, *,
         return files, {"driver": "full-toolset", "frs_requested": len(contracts),
                        "frs_generated": len(files)}
 
-    def deep_generate_tests(ir, feature_id, contracts, *, language="Python", **_kw):
+    def deep_generate_tests(ir, feature_id, contracts, *, language="Python",
+                            stack="python", **_kw):
         result = full.generate_tests(root, ir, feature_id, contracts, log,
-                                     language=language, model=model)
+                                     language=language, stack=stack, model=model)
         return result, {"driver": "full-toolset",
                         "cases": len(result.cases) if result else 0,
                         "has_source": bool(result and result.test_source.strip())}
