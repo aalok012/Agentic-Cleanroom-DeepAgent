@@ -1,11 +1,17 @@
 # Migration to deep agents — change log
 
-Branch `deep-agents-only`, 2026-09-02 → 09-03. Seven commits, 69 files, +1,704 / −3,546.
-Tests: 18 → 76.
+Branch `deep-agents-only`, 2026-09-02 → 09-03. Nine commits, 76 tests.
 
 Two things happened here. The pipeline moved to deepagents-only generation and lost the
-cot/mot dimension; and reviewing that move surfaced several defects, two of which it had
-introduced. Both are recorded below, including what went wrong.
+cot/mot dimension; and reviewing that move surfaced several defects, three of which it had
+introduced (§5 prerequisites, §6 Dafny kernel, §7 test stack). All are recorded below,
+including what went wrong.
+
+**The pattern worth noting:** each of those three was information the deterministic prompt
+carried that the deep prompt never had, because it never had to while the deterministic path
+was the default. Removing that path removed the briefing with it, and the suite stayed green
+every time. Any agent prompt reviewed from here should be diffed against what the deleted
+template used to say, not just read on its own.
 
 ---
 
@@ -136,6 +142,25 @@ which the agent reads only if it chooses to — seeding guidance is not stating 
 never passed its name down. Silent, because `_generate_feature_deep` overrode whatever the
 agent submitted. The name is now owned by the caller, and `submit_dafny` rejects both a
 renamed module and a source with no `<mod>Domain refines Domain`.
+
+## 7. Test agent made stack-aware again — `eca8f2f`
+
+Same shape as §6, on the test side. `TestAgent.stack` is documented as shaping "plain function
+calls (python) vs TestClient HTTP requests (fastapi) — and the failure oracle (ValueError vs
+HTTPException)", but `generate()` only passed `language` down, and `deep_generate_tests` had no
+`stack` parameter at all.
+
+The deleted `generate_tests.j2` branched on stack throughout. What went with it, for FastAPI:
+the HTTP endpoint per FR (derived from `file_path`, which the contract sheet does not carry);
+`expected_json` of `{"raises": "HTTPException"}` — `TEST_PROMPT` said flatly that
+`oracle="raises"` asserts a ValueError, and `runner.py` defaults to ValueError when
+`expected_json` says nothing; the TestClient instructions for `test_source`; and the
+`setup_json` guidance that the database starts EMPTY, so a case editing an entity must first
+create it using the same entity identifier.
+
+None of it survived in `blackbox-testing.md` either — that document is stack-agnostic and
+mentions HTTP zero times. So on a FastAPI run the agent wrote direct-call ValueError tests
+against a web app, and every such case fails a correct implementation.
 
 ---
 
