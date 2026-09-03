@@ -250,8 +250,12 @@ def test_proof_generator_uses_the_verifier_when_given_one(fake_llm):
         "verified"))
     out, metrics = deep_generate_dafny(IR, "1", [CONTRACT], module="F", verifier=verifier)
 
-    assert len(calls) == 2
-    assert metrics["verify_calls"] == 2 and metrics["verified"] is True
+    # Three, not two: the agent verified `module F { ... }` but SUBMITTED
+    # `module FDomain refines Domain { ... }`. The driver always verifies the text that was
+    # actually submitted, so the recorded verdict never describes a draft the agent abandoned.
+    assert len(calls) == 3
+    assert calls[-1] == out["source"], "the final verification must be of the SUBMITTED source"
+    assert metrics["verify_calls"] == 3 and metrics["verified"] is True
     assert "fixed" in out["source"]
 
 

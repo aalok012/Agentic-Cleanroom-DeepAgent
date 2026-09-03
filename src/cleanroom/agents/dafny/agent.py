@@ -52,9 +52,10 @@ class DafnyAgent:
         self.project_dir = Path(project_dir)
         self.dafny_dir = self.project_dir / "dafny"
         self.model = model
-        # `max_rounds` is accepted for caller compatibility but no longer steers generation: the
-        # agent owns its own briefing (deep.generation.PROOF_PROMPT) and its own iteration budget
-        # (a LangGraph step cap, tuned with CLEANROOM_DEEP_MAX_STEPS).
+        # `max_rounds` caps the DRIVER's generate -> verify -> revise loop in
+        # deep.generation.deep_generate_dafny. Handing the agent a `dafny_verify` tool and
+        # trusting it to iterate did not work — it submitted unverified on every feature — so
+        # the loop is ours again. CLEANROOM_DEEP_MAX_STEPS still caps steps WITHIN one round.
         self.max_rounds = max_rounds
         self.llm = llm or get_llm(model=model, temperature=0.0)
         # Per-feature proof cache: lets the (otherwise monolithic) proof tier survive a mid-run
@@ -139,9 +140,12 @@ class DafnyAgent:
         # reach the model through the deterministic prompt this class no longer has; without
         # them the agent invents a name and may not refine Replay.dfy at all, and the adapter
         # that imports <mod>Domain has nothing to bind to.
+        # max_rounds is live again: the driver in deep_generate_dafny runs the
+        # generate -> verify -> revise loop itself, because the agent cannot be relied on to
+        # call dafny_verify (measured: 0 calls across 37 features).
         out, metrics = deep_generate_dafny(
             ir, feature_id, contracts, module=mod, domain=self._abstract_domain(),
-            verifier=verifier, model=self.model)
+            verifier=verifier, model=self.model, max_rounds=getattr(self, "max_rounds", 6))
 
         code = out.get("source") or ""
         if not code.strip():

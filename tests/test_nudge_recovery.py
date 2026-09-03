@@ -45,3 +45,37 @@ def test_nudge_recovers_unsubmitted_fr(monkeypatch):
     assert metrics["frs_submitted"] == 1
     assert len(files) == 1
     print("PASS: narrated first, submitted after nudge, no exception raised")
+
+
+def test_driver_forces_proof_revision_when_agent_never_verifies(fake_llm):
+    """The observed Qwen3 behaviour: submit once, never call dafny_verify.
+
+    Measured over 37 foodsaver features it called the verifier zero times on every one, and
+    28 of 32 submitted modules did not even parse. The driver must run the loop itself and
+    feed Dafny's diagnostics back, rather than recording the first draft as unproved.
+    """
+    from src.cleanroom.agents.deep.generation import deep_generate_dafny
+    from tests.test_deep_generation import IR, CONTRACT, probe
+
+    seen: list[str] = []
+
+    def verifier(source: str):
+        seen.append(source)
+        ok = "datatype Model" in source          # only the corrected form parses
+        return ok, "" if ok else "F.dfy(2,14): Error: invalid SynonymTypeDecl"
+
+    # The agent never calls dafny_verify; it submits a bad module, then a good one only
+    # after the driver hands back the parse error.
+    fake_llm(probe(
+        ("submit_dafny", {"module_name": "F", "source": "module FDomain refines Domain { type Model = { a: bool } }"}),
+        "done",
+        ("submit_dafny", {"module_name": "F", "source": "module FDomain refines Domain { datatype Model = Model(a: bool) }"}),
+        "fixed now"))
+
+    out, metrics = deep_generate_dafny(IR, "1", [CONTRACT], module="F",
+                                       verifier=verifier, max_rounds=6)
+
+    assert len(seen) == 2, f"driver should have verified both submissions, saw {len(seen)}"
+    assert metrics["verified"] is True, "the corrected module must be recorded as verified"
+    assert "datatype Model" in out["source"]
+    print("PASS: agent never verified; driver forced a revision and the module now verifies")

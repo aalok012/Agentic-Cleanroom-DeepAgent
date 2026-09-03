@@ -670,6 +670,18 @@ _VERIFY_NOTE = ("* Call `dafny_verify(source=...)` to check a draft. Iterate unt
                 "or you run out of budget; report honestly if it does not.\n")
 
 
+def _verify_failed_nudge(module: str, output: str) -> str:
+    """Hand Dafny's own diagnostics back to the agent as the next turn."""
+    return (f"Your submitted module `{module}` does NOT verify. Dafny reports:\n\n"
+            f"{(output or '').strip()[:4000]}\n\n"
+            f"A parse error means the file is not valid Dafny at all — fix the syntax first. "
+            f"Note that a multi-field model must be `datatype Model = Model(field: T, ...)`; "
+            f"`type Model = (a: T, b: U)` and `type Model = {{ a: T }}` are both invalid, and a "
+            f"refining function or lemma must not repeat inherited requires/ensures clauses. "
+            f"Read /skills/dafny-patterns.md if you have not. Then call `submit_dafny` again "
+            f"with the corrected COMPLETE module source.")
+
+
 def deep_generate_dafny(
     ir: dict,
     feature_id: str,
@@ -681,6 +693,7 @@ def deep_generate_dafny(
     temperature: float = 0.0,
     model: str | None = None,
     max_steps: int | None = None,
+    max_rounds: int = 6,
 ) -> tuple[dict, dict]:
     """Agent-driven Dafny generation for ONE feature.
 
@@ -733,6 +746,7 @@ def deep_generate_dafny(
         return f"Recorded module {module_name} ({len(source.splitlines())} lines)."
 
     tools = [submit_dafny]
+    verdicts: dict[str, tuple[bool, str]] = {}   # source -> (ok, output), from the agent's own calls
     verify_note = ""
     if verifier is not None:
         verify_note = _VERIFY_NOTE
@@ -749,6 +763,7 @@ def deep_generate_dafny(
             except Exception as exc:                  # a broken verifier must not kill the run
                 return f"The verifier could not be run ({exc}). Continue without it."
             verifications.append(bool(ok))
+            verdicts[(source or "").strip()] = (bool(ok), output or "")
             return ("Verification SUCCEEDED.\n" if ok else "Verification FAILED.\n") + (output or "")
 
         tools.append(dafny_verify)
@@ -770,15 +785,40 @@ def deep_generate_dafny(
 
     state = invoke_agent(agent, opening, seed_files(seeds), max_steps=steps)
 
-    # A proof agent that reasoned its way to a module and then narrated instead of calling
-    # submit_dafny leaves 0 bytes behind — observed twice on Qwen3. Ask once before accepting
-    # the empty result; unlike code/tests there is no exception to fall back on, the feature
-    # just silently scores unproved.
-    for _ in range(_SUBMIT_RETRIES):
-        if submitted.get("source", "").strip():
+    # ---- Driver-owned generate -> verify -> revise loop --------------------------------
+    # The agent is HANDED `dafny_verify` and told to iterate until its module verifies, and
+    # this design deliberately dropped the old fixed round loop in favour of that. Measured
+    # over 37 foodsaver features on Qwen3-32B-AWQ, it called the verifier ZERO times on every
+    # single one: write once, submit, stop. 28 of 32 submitted modules did not even parse.
+    #
+    # So the loop cannot depend on the agent choosing to iterate. Verify what it submitted
+    # ourselves and hand the verifier's own output back — Dafny names the file, line, column
+    # and offending token, which is exactly what a revision needs. The agent still delivers
+    # only through submit_dafny, so "TOOL CALLING IS THE CONTRACT" is untouched.
+    for _ in range(max(1, max_rounds)):
+        src = submitted.get("source", "").strip()
+        if not src:
+            state = nudge_agent(agent, state, _missing_nudge([f"module {module}"], "submit_dafny"),
+                                max_steps=steps)
+            continue
+        if verifier is None:
             break
-        state = nudge_agent(agent, state, _missing_nudge([f"module {module}"], "submit_dafny"),
-                            max_steps=steps)
+        if src in verdicts:
+            ok, output = verdicts[src]          # the agent already checked this exact text
+        else:
+            try:
+                ok, output = verifier(src)
+            except Exception as exc:            # a broken verifier must not lose the agent's work
+                submitted["source"] = src
+                break
+            verifications.append(bool(ok))
+            verdicts[src] = (bool(ok), output or "")
+        if ok:
+            break
+        submitted["source"] = ""      # force a genuine resubmission, not silent reuse
+        state = nudge_agent(agent, state, _verify_failed_nudge(module, output), max_steps=steps)
+    source_after_loop = submitted.get("source", "") or src
+    submitted["source"] = source_after_loop
 
     # Submitted content ONLY — see "TOOL CALLING IS THE CONTRACT" in the module docstring.
     # Unlike code and tests this does NOT raise: an unproved feature is a legitimate outcome the
