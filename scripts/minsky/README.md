@@ -28,13 +28,14 @@ the tunnel will connect.
 Checkpoint/requeue (§06 of the Minsky guide) is for training, **not** for this server job:
 a requeue lands on a different node and silently breaks your tunnel. Size the walltime instead.
 
-## The two models
+## The models
 
 Configured in [`models.conf`](models.conf), selected with `MODEL_KEY`:
 
 | Key | Served model | Quantization | Weights | Tool calling |
 |---|---|---|---|---|
 | `qwen-coder` | `Qwen/Qwen2.5-Coder-32B-Instruct-AWQ` | 4-bit AWQ (official build) | ~19 GB | native (hermes parser) |
+| `qwen3` | `Qwen/Qwen3-32B-AWQ` | 4-bit AWQ (official build) | ~19 GB | native (hermes parser) |
 | `r1-distill` | `deepseek-ai/DeepSeek-R1-Distill-Qwen-32B` | FP8 at load | ~32 GB | **none** |
 
 AWQ is preferred — smaller, faster to start. The R1 distill has no official 4-bit build,
@@ -45,6 +46,23 @@ have the disk quota before the first R1 run. If you vet a community AWQ quant, s
 
 `--kv-cache-dtype fp8` roughly doubles usable context in the VRAM left after weights,
 which matters most for the FP8 model (~13 GB spare vs ~27 GB for AWQ).
+
+### Qwen3-32B is a hybrid reasoning model
+
+It ships with thinking **on** by default, so it emits `<think>…</think>` before the answer —
+the same parsing hazard as the R1 distill, handled the same way with
+`--reasoning-parser qwen3`. Unlike the distill it **does** support tool calling, so structured
+output still goes through the native hermes path instead of the text-recovery fallback; it is
+the closest thing here to a like-for-like comparison against `qwen-coder`, differing in model
+generation rather than in serving contract.
+
+Qwen advise temperature 0.6 in thinking mode (it degenerates into loops at 0), so `tunnel.sh`
+and `run_all.sh` write `CLEANROOM_LLM_TEMPERATURE=0.6` for this key too.
+
+The one thing to check on the first run: `--reasoning-parser qwen3` needs a reasonably recent
+vLLM. If `/opt/apptainer/images/vllm-openai-latest.sif` rejects the flag, drop it (Qwen3's
+`<think>` block is then left in `content` and `_extract_json` may trip on it) or point
+`VLLM_SIF` at a newer image.
 
 ### Two things specific to the R1 distill
 
@@ -91,7 +109,7 @@ curl -s localhost:8000/v1/models | python3 -m json.tool
 ./run_example.sh
 ```
 
-Then `scancel` the job, submit the other `MODEL_KEY`, re-run `tunnel.sh`, and repeat.
+Then `scancel` the job, submit the next `MODEL_KEY`, re-run `tunnel.sh`, and repeat.
 Results go in `results/new_feature_2026-08-26/`.
 
 ## Still worth checking
