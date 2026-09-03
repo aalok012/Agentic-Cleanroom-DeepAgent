@@ -466,8 +466,12 @@ def test_every_prompt_renders_in_both_arms():
     from src.cleanroom.agents.deep.generation import CODE_PROMPT, PROOF_PROMPT, TEST_PROMPT
     from src.cleanroom.agents.deep.planning import PROMPT as PLANNING_PROMPT
 
-    CODE_PROMPT.format(language="Python", spec_root="/spec", code_root="/code",
-                       skills_block="", max_steps=90)
+    from src.cleanroom.agents.deep.generation import code_stack_block
+
+    for stack in ("python", "fastapi"):
+        CODE_PROMPT.format(language="Python", spec_root="/spec", code_root="/code",
+                           skills_block="", max_steps=90,
+                           stack_block=code_stack_block(stack))
     from src.cleanroom.agents.deep.generation import test_stack_block
 
     for stack in ("python", "fastapi"):
@@ -476,7 +480,10 @@ def test_every_prompt_renders_in_both_arms():
                            stack_block=test_stack_block(stack))
     PROOF_PROMPT.format(spec_root="/spec", proof_root="/proof", verify_note="",
                         skills_block="", max_steps=90, module="F1_1", domain="abstract module D")
-    PLANNING_PROMPT.format(spec_root="/spec", max_steps=90)
+    from src.cleanroom.agents.deep.planning import stack_block
+
+    for stack in ("python", "fastapi", "java", "spring"):
+        PLANNING_PROMPT.format(spec_root="/spec", max_steps=90, stack_block=stack_block(stack))
 
 
 def test_planning_prompt_does_not_forbid_resubmission():
@@ -572,3 +579,68 @@ def test_test_agent_passes_its_stack_to_the_driver(monkeypatch):
     test_mod.TestAgent(llm=object(), stack="fastapi").generate(ir)
 
     assert seen == ["fastapi"], "the run's stack never reached the test agent"
+
+
+def test_planning_prompt_keeps_the_design_rubric():
+    """plan_feature.j2 carried ~60 lines the deep prompt never had. mvc_layer decides the file
+    path and so the whole MVC layout, and it had ONE line of guidance where the template had a
+    full rubric with tie-breakers and examples."""
+    from src.cleanroom.agents.deep.planning import PROMPT, stack_block
+
+    rendered = PROMPT.format(spec_root="/spec", max_steps=90, stack_block=stack_block("fastapi"))
+
+    # The signature constraint that keeps fn(**json.loads(inputs)) working at certification.
+    assert "JSON-SERIALIZABLE" in rendered and "Pydantic" in rendered
+    # The layer rubric, not just the enum.
+    for cue in ("owns DATA", "owns PRESENTATION", "owns BEHAVIOUR", "Tie-breakers"):
+        assert cue in rendered, f"the mvc_layer rubric lost {cue!r}"
+    # Practical rules that prevent downstream breakage.
+    assert "DISTINCT function names" in rendered
+    assert "ACTUALLY PROVIDES" in rendered, "entity_identifier lookup guidance is missing"
+
+
+def test_planning_prompt_is_stack_aware():
+    """A layer means something different per target; the planner has to know which."""
+    from src.cleanroom.agents.deep.planning import PROMPT, stack_block
+
+    def render(stack):
+        return PROMPT.format(spec_root="/spec", max_steps=90, stack_block=stack_block(stack))
+
+    assert "SQLAlchemy" in render("fastapi") and "APIRouter" in render("fastapi")
+    assert "SQLAlchemy" not in render("python")
+    assert "Java" in render("java")
+
+
+def test_code_prompt_carries_the_stack_conventions():
+    """generate_code.j2 had a large FastAPI structural block: APIRouter, SessionLocal,
+    Body(embed=True), HTTPException instead of ValueError, and the entity-key lookup. Without
+    it a FastAPI run emits plain functions the packager cannot mount."""
+    from src.cleanroom.agents.deep.generation import CODE_PROMPT, code_stack_block
+
+    def render(stack):
+        return CODE_PROMPT.format(language="Python", spec_root="/spec", code_root="/code",
+                                  skills_block="", max_steps=90,
+                                  stack_block=code_stack_block(stack))
+
+    fastapi = render("fastapi")
+    for cue in ("APIRouter", "SessionLocal", "embed=True", "HTTPException",
+                '@router.post("")', "NEVER create your own engine"):
+        assert cue in fastapi, f"the FastAPI conventions lost {cue!r}"
+    assert "NEVER raise a bare ValueError" in fastapi
+
+    plain = render("python")
+    assert "APIRouter" not in plain and "ValueError" in plain
+
+
+def test_code_agent_passes_its_stack_to_the_driver(monkeypatch):
+    from src.cleanroom.agents.code import agent as code_mod
+
+    seen: list[str] = []
+    monkeypatch.setattr(
+        "src.cleanroom.agents.deep.generation.deep_generate_code",
+        lambda ir, contracts, **kw: (seen.append(kw.get("stack")), ([], {}))[1])
+    ir = {"features": [{"functional_requirements": [{"id": "1.1", "description": "d"}]}],
+          "planning": {"contracts": [dict(CONTRACT)]}}
+    code_mod.CodeAgent(llm=object(), stack="fastapi").generate(ir)
+
+    assert seen == ["fastapi"], "the run's stack never reached the code agent"

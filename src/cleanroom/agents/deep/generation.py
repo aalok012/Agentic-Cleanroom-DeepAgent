@@ -201,6 +201,11 @@ Rules:
   means return an error dict.
 * FRs in one feature share data shapes. Use `read_file` across {code_root}/ before you invent
   a shape, so two files do not disagree.
+* Prerequisites listed on a sheet are build-order dependencies. Do NOT call an update/setup
+  prerequisite from a read/query function. If you must call one for its value, import it from
+  its file_path and invoke it with the canonical inputs shown.
+
+{stack_block}
 
 Submit each file with `submit_implementation(fr_id=..., content=...)` giving the FULL source.
 This tool call is the ONLY way to deliver an implementation. Drafting into {code_root}/ with
@@ -222,6 +227,7 @@ def deep_generate_code(
     contracts: list[dict],
     *,
     language: str = "Python",
+    stack: str = "python",
     temperature: float = 0.0,
     model: str | None = None,
     max_steps: int | None = None,
@@ -276,7 +282,8 @@ def deep_generate_code(
     agent = build_agent(
         [submit_implementation],
         CODE_PROMPT.format(language=language, spec_root=SPEC_ROOT, code_root=CODE_ROOT,
-                           skills_block=_skills_block(skills), max_steps=steps),
+                           skills_block=_skills_block(skills), max_steps=steps,
+                           stack_block=code_stack_block(stack)),
         temperature=temperature, model=model, name="code")
     listing = "\n".join(f"- FR {c['fr_id']} -> {path_by_fr[c['fr_id']]}" for c in contracts)
     opening = (f"Implement these {len(contracts)} functional requirement(s):\n{listing}\n\n"
@@ -304,6 +311,62 @@ def deep_generate_code(
         "frs_submitted": len(submitted), "agent_steps": agent_step_count(state),
         "max_steps": steps, "temperature": temperature,
     }
+
+
+_CODE_STACK_FASTAPI = """\
+TARGET STACK — FastAPI + SQLAlchemy. This is a REAL web service backed by a shared database.
+NEVER fake state with a module-level list/dict and NEVER hardcode a returned value; every value
+comes from the database via the session. These are STRUCTURAL conventions — derive all
+behaviour from the contract sheets alone.
+
+* Imports (exactly what you use): `from fastapi import APIRouter, Body, HTTPException`,
+  `from sqlalchemy import Column, Integer, String, Float, Boolean`,
+  `from sqlalchemy.orm import Session`, `from app.extensions import Base, SessionLocal`.
+  NEVER create your own engine or call FastAPI().
+* model layer: a `Base` subclass with typed `Column`s, exactly one `primary_key=True`;
+  persist and read through a `Session` from `SessionLocal()` in a try/finally. Import any
+  model you depend on from `app.models.<module>`.
+* controller/view layer: ONE module-level `router = APIRouter()`, and decorate the contract
+  function with `@router.post("")` — EMPTY path, the app registers it under a unique prefix.
+  DEFINE the router only; never register it on an app.
+* HTTP shape: keep the exact function name and return type. Give EVERY parameter a
+  `= Body(..., embed=True)` default (e.g. `action: str = Body(..., embed=True)`) — `embed=True`
+  is required on every one, so the request body is always the JSON object
+  `{"<param>": <value>, ...}` even with a single parameter. Open `db = SessionLocal()` inside
+  the function. Return the JSON-serializable response on success (it becomes the 200 body).
+* On a precondition or validation failure `raise HTTPException(status_code=400, detail="...")`
+  — 404 for a missing record, 403 for a forbidden actor. NEVER raise a bare ValueError.
+* ENTITY KEY: when the sheet names an entity identifier, persist and look the entity up by
+  THAT field (`db.query(Model).filter(Model.<key> == <key>).first()`) and store it on create.
+  Do not key by any other field, and do not require an identifier the caller never sends.
+"""
+
+_CODE_STACK_PLAIN = """\
+TARGET — plain, framework-free Python. Implement each FR as an ordinary importable function.
+
+* Keep the EXACT function name, parameters and return type from the signature.
+* Use ONLY JSON-serializable types (str, int, float, bool, list, dict).
+* The function MUST succeed when called as `fn(**json.loads(<example inputs>))` and return a
+  value equal to the sheet's expected return on the happy path — same length, keys and values.
+* For a parameter like `request: dict`, read keys on the parameter directly
+  (`request["auth_token"]`), NEVER nested as `request["request"][...]`.
+* Raise ValueError on a precondition violation when the error mode is "raise".
+* Do NOT call the network, sockets or the filesystem — simulate in memory when preconditions
+  hold. Standard-library imports only.
+"""
+
+CODE_STACK_BLOCKS = {"fastapi": _CODE_STACK_FASTAPI}
+
+
+def code_stack_block(stack: str) -> str:
+    """Structural conventions for the run's target stack.
+
+    These say how a file must be SHAPED to assemble into the packager's app — routers, session
+    handling, the HTTP error type — never what any requirement does. That is the same
+    structural knowledge the planner and test agent already have, so isolation is unaffected;
+    without it a FastAPI run produces plain functions the packager cannot mount.
+    """
+    return CODE_STACK_BLOCKS.get(stack, _CODE_STACK_PLAIN)
 
 
 # --------------------------------------------------------------------------------------

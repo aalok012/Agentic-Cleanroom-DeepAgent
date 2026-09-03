@@ -48,6 +48,48 @@ from src.cleanroom.agents.planning.schema.plan import ArgDoc, FRPlan
 
 SPEC_ROOT = "/spec"
 
+# How the three layers land in each target stack. The deleted plan_feature.j2 branched on this;
+# without it the planner classifies layers with no idea what a "model" IS in the run's target,
+# and mvc_layer decides the file path every downstream agent binds to.
+_STACK_BLOCKS = {
+    "fastapi": """\
+TARGET STACK — FastAPI + SQLAlchemy, mapped per layer:
+* model      -> a SQLAlchemy model plus the function that persists/queries it (DB access
+                lives here, and only here).
+* controller -> an APIRouter handler that validates input, calls the model, returns JSON.
+* view       -> an APIRouter read endpoint / serializer returning the formatted response.
+Every signature must stay JSON-serializable — these become HTTP endpoints taking a JSON body.""",
+    "java": """\
+TARGET STACK — plain Java (JDK standard library). The Python signature you write is the
+reference interface; it is realized as a Java method.
+* model      -> classes that hold, define or query data.
+* controller -> classes that orchestrate a state change or workflow.
+* view       -> classes that format and return a payload.
+Keep signatures JSON-serializable — they map to Map/List/String/int/double/boolean.""",
+    "spring": """\
+TARGET STACK — Spring Boot. The Python signature you write is the reference interface.
+* model      -> the persisted entity and its repository access.
+* controller -> a @RestController handler orchestrating the state change.
+* view       -> the response shape returned to the caller.
+Keep signatures JSON-serializable — they map to Map/List/String/int/double/boolean.""",
+}
+
+_STACK_PLAIN = """\
+TARGET STACK — plain Python. Signatures are called directly as `fn(**json.loads(inputs))`.
+* model      -> data/state functions.
+* controller -> behaviour and orchestration.
+* view       -> functions that format and return a payload."""
+
+
+def stack_block(stack: str) -> str:
+    """Per-stack layer mapping for the planning prompt.
+
+    Knowing the target stack is structural — it shapes what a signature and a layer MEAN — and
+    is the same information the Code and Test agents already get. It reveals nothing about any
+    implementation, so isolation is unaffected.
+    """
+    return _STACK_BLOCKS.get(stack, _STACK_PLAIN)
+
 PROMPT = """\
 You are the planning agent for a clean-room software pipeline. You design the INTERFACE for
 each functional requirement (FR) of one feature. You do not write implementations or tests.
@@ -60,24 +102,67 @@ Your filesystem:
 For every FR you must call `submit_fr_plan` with:
 * id                     — the FR id, copied VERBATIM from the spec sheet. Never invent one.
 * signature              — a one-line function signature in Python syntax (name, typed
-                           params, return type). This is the canonical, language-neutral
-                           interface; code generation realizes it in the target language.
+                           params, return type), no body. This is the canonical,
+                           language-neutral interface; code generation realizes it in the
+                           target language, so use Python syntax whatever the target.
+                           Use JSON-SERIALIZABLE TYPES ONLY — str, int, float, bool, list,
+                           dict. NO custom classes, Pydantic models or ORM types: the case
+                           runner invokes the function as `fn(**json.loads(inputs))`, and a
+                           non-serializable parameter cannot be built from JSON.
+                           e.g. `def search_videos(query: str) -> dict:`
 * args_json              — JSON list of {{"name": ..., "description": ...}}, one per
-                           parameter, names matching the signature EXACTLY. `[]` if none.
+                           parameter, names matching the signature EXACTLY, each describing
+                           what it is and its constraints. `[]` if the signature takes none.
 * returns                — what the function returns; empty string for a None return.
-* mvc_layer              — exactly one of: model, view, controller.
-* example_inputs_json    — JSON object mapping parameter names to happy-path values.
+* mvc_layer              — exactly one of: model, view, controller. This decides the file
+                           path, so it shapes the whole app. Judge it from the CONTRACT
+                           (stimulus + response), never from keywords in the name:
+                             model      — owns DATA. Defines, persists, queries or updates a
+                                          stored entity. No request handling, no formatting.
+                             view       — owns PRESENTATION. Shapes data for output and never
+                                          mutates state: a read whose response IS the payload.
+                             controller — owns BEHAVIOUR. Orchestrates a state change: takes
+                                          input, invokes the model, applies rules, returns.
+                           Flow: controller takes input -> calls model -> view serializes.
+                           Tie-breakers, by PRIMARY effect:
+                             changes persisted state -> controller (even if it also reads);
+                             pure read returning a formatted payload -> view;
+                             only defines/stores an entity, no orchestration -> model.
+                           e.g. "cancel an order before serving" -> controller (mutates);
+                                "display available dishes" -> view (read-only payload);
+                                "add/edit/delete staff records" -> model (entity CRUD).
+* example_inputs_json    — JSON OBJECT of happy-path kwargs. The function is always invoked
+                           as `fn(**inputs)`, so EVERY top-level key must match a signature
+                           parameter exactly — no extra keys, none missing. `{{}}` for a
+                           no-arg function.
 * expected_return_json   — the JSON value returned on that happy path.
 * error_mode             — "raise" (ValueError) or "return" (an error dict).
-* failure_inputs_json    — JSON kwargs that must fail; "" if the FR has no failure case.
-* entity_identifier      — for a requirement that persists an entity, the ONE field that
-                           uniquely keys it (must appear in example_inputs_json); "" otherwise.
+* failure_inputs_json    — JSON kwargs for ONE precondition violation that must fail. Use
+                           the same parameter names as the signature and genuinely violate
+                           the stated precondition (empty required string, false where true
+                           is required, invalid enum). Use "" when the precondition is
+                           "none"/empty, the function takes no parameters, or no clear
+                           testable violation exists.
+* entity_identifier      — for a STATEFUL CRUD requirement (create/edit/delete/look up a
+                           PERSISTED entity), the ONE field that uniquely keys it for lookup.
+                           It MUST be a key of example_inputs_json (possibly nested inside an
+                           entity object). Pick a key the stimulus ACTUALLY PROVIDES on
+                           edit/delete — if records are referenced by name, use "name", not
+                           an "id" the caller never supplies. "" for stateless requirements
+                           and pure computations with no persisted entity.
 
 Design rules:
 * The signature is a contract three downstream agents bind to independently. Make it precise
   and self-explanatory; they cannot ask you what you meant.
 * Parameter names in args_json, example_inputs_json and the signature must agree exactly.
 * Prefer the vocabulary of the requirement text over invented terms.
+* Use DISTINCT function names when two FRs do different things — do not reuse one name for
+  both (prefer `sort_torrent_results` / `sort_video_results` over two `sort_search_results`).
+  Two FRs sharing a name collide on one file path and get suffixed apart.
+* Prefer explicit scalar parameters (`update: bool`, `criteria: str`) over a single opaque
+  `request: dict` when the stimulus names one clear input.
+
+{stack_block}
 
 Start with `write_todos` listing every FR id you must plan, then read each spec sheet, then
 submit them one at a time. Finish only when every FR has been ACCEPTED — the tool tells you
@@ -172,7 +257,8 @@ def deep_design_feature(
     # The budget is stated IN the prompt, so it has to exist before the prompt is built.
     steps = max_steps or (deep_max_steps() + 8 * len(fr_order))
     agent = build_agent([submit_fr_plan],
-                        PROMPT.format(spec_root=SPEC_ROOT, max_steps=steps),
+                        PROMPT.format(spec_root=SPEC_ROOT, max_steps=steps,
+                                      stack_block=stack_block(stack)),
                         temperature=temperature, model=model, name="planning")
     # Name each sheet's exact path. virtual_path() prefixes an index (/spec/00_1_1.md), so an
     # agent told only the directory must spend a turn on `ls` to learn what the driver already

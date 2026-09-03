@@ -125,7 +125,7 @@ class CodeAgent:
         files: list[GeneratedFile] = []
         for feature_contracts in by_feature.values():
             produced, _metrics = deep_generate_code(
-                ir, feature_contracts, language=self.language)
+                ir, feature_contracts, language=self.language, stack=self.stack)
             files.extend(produced)
         return GeneratedCode(files=files)
 

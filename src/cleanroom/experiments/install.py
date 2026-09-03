@@ -61,8 +61,9 @@ def install_full_toolset(root: Path, log: RunLog | None = None, *,
     # --- Stages 4-6: code / test / proof ---------------------------------------------
     from src.cleanroom.agents.deep import generation as gen_mod
 
-    def deep_generate_code(ir, contracts, *, language="Python", **_kw):
-        files = full.generate_code(root, ir, contracts, log, language=language, model=model)
+    def deep_generate_code(ir, contracts, *, language="Python", stack="python", **_kw):
+        files = full.generate_code(root, ir, contracts, log, language=language, stack=stack,
+                                   model=model)
         return files, {"driver": "full-toolset", "frs_requested": len(contracts),
                        "frs_generated": len(files)}
 

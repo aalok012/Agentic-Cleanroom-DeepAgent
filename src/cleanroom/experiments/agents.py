@@ -29,10 +29,12 @@ from src.cleanroom.agents.deep.generation import (
     CODE_PROMPT,
     PROOF_PROMPT,
     TEST_PROMPT,
+    code_stack_block,
     contract_sheet,
     test_stack_block,
 )
 from src.cleanroom.agents.deep.planning import PROMPT as PLANNING_PROMPT
+from src.cleanroom.agents.deep.planning import stack_block as planning_stack_block
 from src.cleanroom.agents.deep.planning import _spec_sheet
 from src.cleanroom.agents.deep.runtime import load_skills
 from src.cleanroom.agents.planning.schema.plan import ArgDoc, FRPlan
@@ -149,7 +151,8 @@ def plan_feature(root: Path, feature_name: str, fr_order: list[str],
     steps = full_toolset_max_steps() + 8 * len(fr_order)
     agent = build_full_agent(
         [submit_fr_plan],
-        PLANNING_PROMPT.format(spec_root=SPEC_DIR, max_steps=steps) + _SHELL_NOTE,
+        PLANNING_PROMPT.format(spec_root=SPEC_DIR, max_steps=steps,
+                               stack_block=planning_stack_block(stack)) + _SHELL_NOTE,
         _backend_for(root), name="planning", model=model)
     state, secs = invoke_full(
         agent,
@@ -163,7 +166,8 @@ def plan_feature(root: Path, feature_name: str, fr_order: list[str],
 
 
 def generate_code(root: Path, ir: dict, contracts: list[dict], log: RunLog,
-                  *, language: str = "Python", model: str | None = None) -> list[GeneratedFile]:
+                  *, language: str = "Python", stack: str = "python",
+                  model: str | None = None) -> list[GeneratedFile]:
     """Implementation for one feature's FRs. Same prompt as the clean-room code agent."""
     if not contracts:
         return []
@@ -200,7 +204,8 @@ def generate_code(root: Path, ir: dict, contracts: list[dict], log: RunLog,
     agent = build_full_agent(
         [submit_implementation],
         CODE_PROMPT.format(language=language, spec_root=SPEC_DIR, code_root=CODE_DIR,
-                           skills_block=_skills_block(skills), max_steps=steps) + _SHELL_NOTE,
+                           skills_block=_skills_block(skills), max_steps=steps,
+                           stack_block=code_stack_block(stack)) + _SHELL_NOTE,
         _backend_for(root), name="code", model=model)
     state, secs = invoke_full(
         agent,
