@@ -79,7 +79,8 @@ ensure_server() {
           echo "LLM_BASE_URL=http://$node:$port/v1"
           echo "LLM_MODEL=$model"
           echo "LLM_API_KEY=EMPTY"
-          case "$MODEL_KEY" in r1-distill|qwen3) echo "CLEANROOM_LLM_TEMPERATURE=0.6" ;; esac
+          # R1 distills only — Qwen3 at 0.6 returns empty content and randomises the agents.
+          case "$MODEL_KEY" in r1-distill) echo "CLEANROOM_LLM_TEMPERATURE=0.6" ;; esac
         } > .env
         log "  server up on $node:$port ($model)"
         return 0
