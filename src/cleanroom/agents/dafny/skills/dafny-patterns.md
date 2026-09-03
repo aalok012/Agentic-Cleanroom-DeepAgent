@@ -77,9 +77,75 @@ module AppCore {
 ```
 
 
+## The model usually has SEVERAL fields — use a `datatype`, not a type synonym
+
+The counter above uses `type Model = int` because its whole state is one number. That is the
+exception. A real feature's state has several fields, and then `Model` MUST be a `datatype`
+with named fields. Dafny tuples are POSITIONAL — `(int, bool)` — so you cannot name their
+components, and Dafny has no record-literal type at all.
+
+```dafny
+// WRONG — Dafny tuple components cannot be named. Parse error: "closeparen expected".
+type Model = (details: map<string, string>, applicationActive: bool)
+
+// WRONG — this is TypeScript, not Dafny. Parse error: "invalid SynonymTypeDecl".
+type Model = { isLoggedIn: bool }
+
+// RIGHT — a datatype with one constructor gives you named fields AND `m.field` access.
+datatype Model = Model(details: map<string, string>, applicationActive: bool)
+```
+
+Both wrong forms fail at PARSE time, before Dafny checks a single proof obligation, so the
+whole module scores zero however good the reasoning inside it is.
+
+Here is the multi-field shape in full — it verifies (`3 verified, 0 errors`) against the
+`Replay.dfy` kernel in this repo:
+
+```dafny
+include "Replay.dfy"
+
+module EventDomain refines Domain {
+  datatype Model = Model(
+    details: map<string, string>,
+    requirements: map<string, int>,
+    applicationActive: bool)
+
+  datatype Action =
+    | UpdateDetails(newDetails: map<string, string>, newRequirements: map<string, int>)
+    | CloseApplication
+
+  ghost predicate Inv(m: Model) {
+    m.applicationActive ==> |m.details| >= 0
+  }
+
+  function Init(): Model {
+    Model(map[], map[], true)      // empty map is `map[]`; `map<string, string>{}` won't parse
+  }
+
+  function Apply(m: Model, a: Action): Model {
+    match a
+    case UpdateDetails(d, r) => Model(d, r, m.applicationActive)
+    case CloseApplication    => m.(applicationActive := false)   // datatype update
+  }
+
+  function Normalize(m: Model): Model { m }
+
+  // No `requires`/`ensures` here: both are inherited from the abstract Domain and
+  // REPEATING THEM IS AN ERROR ("a refining method is not allowed to add preconditions").
+  lemma InitSatisfiesInv() {}
+  lemma StepPreservesInv(m: Model, a: Action) {}
+}
+```
+
+Field access is `m.applicationActive` (with the dot). Copy-with-change is
+`m.(applicationActive := false)`. Both need the `datatype` form above.
+
 ## Common Mistakes to Avoid
 
-- It is an error to repeat inherited `requires` clauses.
+- It is an error to repeat inherited `requires` clauses (see the refinement note above).
+- `Model` with more than one field must be a `datatype`, never `type Model = (a: T, b: U)`
+  (named tuple, invalid) or `type Model = { a: T }` (TypeScript, invalid).
+- The empty map literal is `map[]`. `map<string, string>{}` is a parse error ("invalid Ident").
 - It is OK to have `assume {:axiom} false` in _proofs_, temporarily, as the pieces are put together. Strive for zero such axioms eventually.
 - Nested pattern matching _is_ allowed, but needs to be properly parenthesized. Example (out of context):
 ```
