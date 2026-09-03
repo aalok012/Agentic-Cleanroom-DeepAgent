@@ -176,7 +176,20 @@ class DafnyAgent:
                     pass
                 features.append(fd)
                 continue
-            fd = self.generate_feature(ir, fid)
+            # One feature must not be able to end the proof tier. The agent owns its own
+            # iteration budget, and blowing it raises (LangGraph GraphRecursionError) — as does
+            # any transport blip mid-proof. Unproved is a NORMAL outcome here: the pipeline's
+            # prove-or-test fallback certifies unproved features with pass@k in stage [6].
+            # Letting the exception escape instead threw away every other feature's work.
+            try:
+                fd = self.generate_feature(ir, fid)
+            except Exception as exc:
+                print(f"  !! proof agent failed on {fid}: {type(exc).__name__}: {exc}")
+                print("     -> recorded UNPROVED; the feature falls through to pass@k certification")
+                fd = FeatureDafny(
+                    feature_id=fid, module=mod, dafny_source="", verified=False, rounds=0,
+                    residual_errors=[{"line": 0, "col": 0,
+                                      "message": f"proof agent failed: {type(exc).__name__}: {exc}"}])
             cache[fid] = {"sig": sig, "data": fd.model_dump()}
             self._save_cache(cache)   # incremental: persist after EACH feature so a crash keeps them
             features.append(fd)

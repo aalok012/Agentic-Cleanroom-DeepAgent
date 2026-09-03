@@ -12,6 +12,9 @@ PRICING: dict[str, dict[str, float]] = {
     # present (and honest) for runs served from our own GPU.
     "qwen2.5-coder-32b-instruct-awq": {"input": 0.0, "output": 0.0},
     "qwen2.5-coder-32b-instruct": {"input": 0.0, "output": 0.0},
+    "qwen3-32b-awq": {"input": 0.0, "output": 0.0},
+    "qwen3-32b-fp8": {"input": 0.0, "output": 0.0},
+    "qwen3-32b": {"input": 0.0, "output": 0.0},
     "deepseek-r1-distill-qwen-32b": {"input": 0.0, "output": 0.0},
     # Hosted APIs used for the archived baselines in results/raw_results/.
     "deepseek-v3.2": {"input": 0.2288, "output": 0.3432},
@@ -29,15 +32,24 @@ def _normalize_model(model: str) -> str:
     return (model.split("/", 1)[1] if "/" in model else model).lower()
 
 
+# An unknown model bills nothing. Every self-hosted endpoint is free at the token level, and a
+# missing price must never be able to raise: estimate_cost() is called from run_pipeline.py's
+# FAILURE handler, so a KeyError here destroys the partial run record of an already-failing run
+# and the run disappears from the metrics CSV entirely.
+_FREE: dict[str, float] = {"input": 0.0, "output": 0.0}
+
+
 def _rates(model: str) -> dict[str, float]:
-    """Prices for a model, matching the longest known prefix (handles dated suffixes)."""
+    """Prices for a model, matching the longest known prefix (handles dated suffixes).
+
+    Falls back to DEFAULT_MODEL's rates, then to free — never raises for an unpriced model."""
     model = _normalize_model(model)
     if model in PRICING:
         return PRICING[model]
     for name in sorted(PRICING, key=len, reverse=True):
         if model.startswith(name):
             return PRICING[name]
-    return PRICING[_normalize_model(DEFAULT_MODEL)]
+    return PRICING.get(_normalize_model(DEFAULT_MODEL), _FREE)
 
 
 def estimate_cost(model: str, input_tokens: int, output_tokens: int) -> float:
