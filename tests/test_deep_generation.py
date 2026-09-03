@@ -511,16 +511,24 @@ def test_contract_sheet_carries_prerequisite_signatures():
     assert "FR 1.1" in sheet
 
 
-def test_all_three_generators_get_the_same_prerequisite_briefing():
-    """contract_sheet is deliberately identical across Code/Test/Proof. Giving prerequisites
+def test_every_generator_gets_the_same_prerequisite_briefing():
+    """contract_sheet is deliberately identical across every generator. Giving prerequisites
     to one alone would make an agreement between their artifacts partly an artifact of the
-    briefing rather than evidence of independent derivation."""
+    briefing rather than evidence of independent derivation.
+
+    Counted against the generators that exist rather than a fixed number, so adding one is
+    caught if it seeds a DIFFERENT sheet, not merely because the total moved.
+    """
     import inspect
 
     from src.cleanroom.agents.deep import generation
 
     src = inspect.getsource(generation)
-    assert src.count("_seed_specs(contracts, req_text, _all_contracts(ir))") == 3
+    generators = [n for n in dir(generation) if n.startswith("deep_generate_")]
+
+    assert src.count("_seed_specs(contracts, req_text, _all_contracts(ir))") == len(generators)
+    assert "_seed_specs(contracts, req_text)\n" not in src, \
+        "a generator seeds sheets without the prerequisite index"
 
 
 def test_entity_identifier_must_be_a_key_of_example_inputs():
@@ -643,3 +651,107 @@ def test_code_agent_passes_its_stack_to_the_driver(monkeypatch):
     code_mod.CodeAgent(llm=object(), stack="fastapi").generate(ir)
 
     assert seen == ["fastapi"], "the run's stack never reached the code agent"
+
+
+# --- frontend: an unscored deliverable, still clean-room -----------------------------
+def test_frontend_generator_records_a_page(fake_llm):
+    """The page arrives through submit_page and nowhere else."""
+    from src.cleanroom.agents.deep.generation import deep_generate_frontend
+
+    page = "<html><body><form id=f></form><script>fetch('/controllers/x')</script></body></html>"
+    fake_llm(probe(("submit_page", {"html": page}), "built it"))
+    out, metrics = deep_generate_frontend(IR, "1", "Search", [CONTRACT])
+
+    assert out == page
+    assert metrics["has_page"] and metrics["frs_requested"] == 1
+
+
+def test_frontend_generator_rejects_an_external_url(fake_llm):
+    """The generated app may run with no network, so a CDN link would leave a broken page."""
+    from src.cleanroom.agents.deep.generation import deep_generate_frontend
+
+    bad = '<html><head><script src="https://cdn.example.com/x.js"></script></head>' \
+          '<body><form></form></body></html>'
+    good = "<html><body><form></form><script>fetch('/controllers/x')</script></body></html>"
+    fake_llm(probe(("submit_page", {"html": bad}), ("submit_page", {"html": good}), "inlined"))
+    out, _ = deep_generate_frontend(IR, "1", "Search", [CONTRACT])
+
+    assert out == good, "a page loading an external URL was accepted"
+
+
+def test_frontend_generator_rejects_a_page_that_cannot_call_anything(fake_llm):
+    from src.cleanroom.agents.deep.generation import deep_generate_frontend
+
+    fake_llm(probe(("submit_page", {"html": "<html><body><h1>Hello</h1></body></html>"}),
+                   "gave up"))
+    out, metrics = deep_generate_frontend(IR, "1", "Search", [CONTRACT])
+
+    assert out == "" and not metrics["has_page"]
+
+
+def test_frontend_is_briefed_with_routes_not_code(fake_llm, monkeypatch):
+    """A UI seems to need the backend; it does not. Endpoints come from route_for(file_path),
+    the same function the packager mounts with and the cert oracle calls."""
+    import src.cleanroom.agents.deep.generation as gen
+
+    captured = {}
+    original = gen.invoke_agent
+
+    def capture(agent, prompt, files, **kw):
+        captured["opening"] = prompt
+        captured["seeded"] = sorted(files)
+        return original(agent, prompt, files, **kw)
+
+    monkeypatch.setattr(gen, "invoke_agent", capture)
+    fake_llm(probe("nothing"))
+    gen.deep_generate_frontend(IR, "1", "Search", [CONTRACT])
+
+    assert "POST /app/controllers/search" in captured["opening"], "the endpoint was not briefed"
+    assert not any(p.startswith("/code") or p.startswith("/tests")
+                   for p in captured["seeded"]), "the frontend was seeded another pool"
+
+
+def test_frontend_does_not_fail_the_run_when_a_page_is_missing(fake_llm):
+    """UNSCORED: unlike code and tests, an empty result degrades the deliverable and returns."""
+    from src.cleanroom.agents.deep.generation import deep_generate_frontend
+
+    fake_llm(probe("I could not build it"))
+    out, metrics = deep_generate_frontend(IR, "1", "Search", [CONTRACT])
+
+    assert out == "" and metrics["has_page"] is False
+
+
+def test_ui_packager_lays_out_generated_pages(tmp_path):
+    """The agent's pages become feature_<id>.html behind a deterministic index, and the
+    contract console survives at console.html as the fallback for a feature with no page.
+
+    The index is built HERE, not by an agent, so navigation cannot link a page that does not
+    exist — the one part of the UI that must not be hallucinated.
+    """
+    from src.cleanroom.utils.ui_packager import build_ui
+
+    ir = {
+        "features": [{"id": "1", "name": "Search",
+                      "functional_requirements": [{"id": "1.1", "description": "d"}]}],
+        "planning": {"contracts": [dict(CONTRACT)]},
+        "generated_frontend": {"pages": {"1": "<html><body>SEARCH UI</body></html>"}},
+    }
+    index = build_ui(ir, tmp_path)
+
+    names = sorted(p.name for p in (tmp_path / "static").iterdir())
+    assert names == ["console.html", "feature_1.html", "index.html"]
+    assert "feature_1.html" in index.read_text() and "Search" in index.read_text()
+    assert "SEARCH UI" in (tmp_path / "static" / "feature_1.html").read_text()
+
+
+def test_ui_packager_is_unchanged_without_a_generated_frontend(tmp_path):
+    """--frontend is opt-in: with no pages the console stays index.html, exactly as before."""
+    from src.cleanroom.utils.ui_packager import build_ui
+
+    ir = {"features": [{"id": "1", "name": "Search",
+                        "functional_requirements": [{"id": "1.1", "description": "d"}]}],
+          "planning": {"contracts": [dict(CONTRACT)]}}
+    index = build_ui(ir, tmp_path)
+
+    assert index.name == "index.html"
+    assert not (tmp_path / "static" / "console.html").exists()

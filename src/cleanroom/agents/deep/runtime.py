@@ -37,6 +37,7 @@ from src.cleanroom.utils.llm_client import get_llm
 CODE_ROOT = "/code"
 TEST_ROOT = "/tests"
 PROOF_ROOT = "/proof"
+UI_ROOT = "/ui"
 SPEC_ROOT = "/spec"
 SKILL_ROOT = "/skills"
 

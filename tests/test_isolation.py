@@ -251,9 +251,12 @@ def _function_names(module, func_name: str) -> set[str]:
 
 
 @pytest.mark.parametrize("generator, forbidden", [
-    ("deep_generate_code", ("TEST_ROOT", "PROOF_ROOT")),
-    ("deep_generate_tests", ("CODE_ROOT", "PROOF_ROOT")),
-    ("deep_generate_dafny", ("CODE_ROOT", "TEST_ROOT")),
+    ("deep_generate_code", ("TEST_ROOT", "PROOF_ROOT", "UI_ROOT")),
+    ("deep_generate_tests", ("CODE_ROOT", "PROOF_ROOT", "UI_ROOT")),
+    ("deep_generate_dafny", ("CODE_ROOT", "TEST_ROOT", "UI_ROOT")),
+    # The UI calls the backend over HTTP, which makes it the generator most tempting to hand
+    # the implementation to. It must not be: the endpoints come from route_for(file_path).
+    ("deep_generate_frontend", ("CODE_ROOT", "TEST_ROOT", "PROOF_ROOT")),
 ])
 def test_every_generator_seeds_only_its_own_pool(generator, forbidden):
     """Each generator may reference only its own artifact root plus the shared /spec.

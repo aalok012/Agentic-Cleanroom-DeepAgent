@@ -638,8 +638,10 @@ def _stub_undefined_model_imports(
 def build_runnable_package(generated_code: dict, out_dir: Path, ir: dict | None = None) -> Path:
     """Assemble generated_code into out_dir/app/ as a runnable FastAPI package. Returns the app dir.
 
-    When ``ir`` is given, also writes the manual test console (``app/static/index.html``) from
-    the planner's contracts — a debugging aid, never an input to any agent.
+    When ``ir`` is given, also writes the static UI. With no generated frontend that is the
+    manual contract console at ``app/static/index.html``; when ``ir['generated_frontend']`` is
+    present the agent's per-feature pages are written alongside a deterministic index, and the
+    console moves to ``console.html``. Either way it is a deliverable, never an agent input.
     """
     from src.cleanroom.utils.code_stats import code_stats
 
@@ -677,6 +679,8 @@ def build_runnable_package(generated_code: dict, out_dir: Path, ir: dict | None 
     if ir is not None:
         from src.cleanroom.utils.ui_packager import build_ui
 
+        # build_ui reads ir['generated_frontend'] itself; with no generated pages it writes
+        # the deterministic console exactly as before.
         build_ui(ir, app)
 
     return app

@@ -95,17 +95,91 @@ def _endpoints(ir: dict) -> list[dict]:
     return out
 
 
-def build_ui(ir: dict, app_dir: Path) -> Path | None:
-    """Write ``app/static/index.html``. Returns the path, or None when there is nothing to show."""
+def build_ui(ir: dict, app_dir: Path, pages: dict[str, str] | None = None) -> Path | None:
+    """Write the app's static UI. Returns the front page, or None when there is nothing to show.
+
+    Without ``pages`` this is unchanged: the deterministic contract console becomes
+    ``index.html``, as before.
+
+    With ``pages`` — ``{feature_id: html}`` from the Frontend Agent — each generated page is
+    written as ``feature_<id>.html``, the console moves to ``console.html`` (it stays useful for
+    debugging, and it is the fallback when a feature's page failed to generate), and
+    ``index.html`` becomes a deterministic shell linking them. The shell is built here rather
+    than by an agent so the navigation cannot point at a page that does not exist.
+    """
+    # Falls back to the IR so a caller cannot silently lose the generated pages by omitting
+    # the argument — the pages live on the same ir that is already being passed in.
+    if pages is None:
+        pages = (ir.get("generated_frontend") or {}).get("pages") or None
+
     endpoints = _endpoints(ir)
-    if not endpoints:
+    if not endpoints and not pages:
         return None
 
     static = Path(app_dir) / "static"
     static.mkdir(parents=True, exist_ok=True)
-    page = static / "index.html"
-    page.write_text(_render(endpoints))
-    return page
+
+    if not pages:
+        page = static / "index.html"
+        page.write_text(_render(endpoints))
+        return page
+
+    (static / "console.html").write_text(_render(endpoints))
+    written: list[tuple[str, str, str]] = []          # (feature_id, name, href)
+    names = {str(f.get("id")): f.get("name", "") for f in ir.get("features", []) or []}
+    for feature_id, page_html in sorted(pages.items(), key=lambda kv: _numeric(kv[0])):
+        href = f"feature_{str(feature_id).replace('.', '_')}.html"
+        (static / href).write_text(page_html)
+        written.append((feature_id, names.get(str(feature_id), ""), href))
+
+    index = static / "index.html"
+    index.write_text(_render_shell(written))
+    return index
+
+
+def _numeric(feature_id: str):
+    """Sort feature ids the way a reader expects (2.10 after 2.9, not before)."""
+    return [int(p) if p.isdigit() else p for p in str(feature_id).split(".")]
+
+
+_SHELL = """<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>__TITLE__</title>
+<style>
+:root { color-scheme: light dark; }
+body { margin:0; font:15px/1.55 ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,sans-serif;
+        background:#f6f7f9; color:#14161a; }
+@media (prefers-color-scheme: dark) { body { background:#111316; color:#e8eaed; } }
+header { padding:28px 24px 12px; }
+h1 { margin:0 0 4px; font-size:20px; letter-spacing:-.01em; }
+p.sub { margin:0; opacity:.65; font-size:13px; }
+ul { list-style:none; margin:18px 24px 40px; padding:0; display:grid; gap:10px;
+      grid-template-columns:repeat(auto-fill,minmax(260px,1fr)); max-width:1100px; }
+a.card { display:block; padding:14px 16px; border-radius:10px; text-decoration:none;
+          background:#fff; color:inherit; border:1px solid #e3e6ea; }
+@media (prefers-color-scheme: dark) { a.card { background:#1a1d21; border-color:#2b2f36; } }
+a.card:hover { border-color:#9aa4b2; }
+a.card b { display:block; font-size:14px; margin-bottom:2px; }
+a.card span { font-size:12px; opacity:.6; }
+footer { margin:0 24px 40px; font-size:12px; opacity:.6; }
+</style></head><body>
+<header><h1>__TITLE__</h1><p class="sub">__COUNT__ feature(s)</p></header>
+<ul>__CARDS__</ul>
+<footer><a href="console.html">Contract console</a> — every endpoint, prefilled from the spec.</footer>
+</body></html>
+"""
+
+
+def _render_shell(written: list[tuple[str, str, str]]) -> str:
+    cards = "\n".join(
+        f'<li><a class="card" href="{html.escape(href)}">'
+        f'<b>{html.escape(name or "Feature " + fid)}</b>'
+        f'<span>Feature {html.escape(fid)}</span></a></li>'
+        for fid, name, href in written)
+    return (_SHELL.replace("__CARDS__", cards)
+                  .replace("__COUNT__", str(len(written)))
+                  .replace("__TITLE__", "Application"))
 
 
 def _render(endpoints: list[dict]) -> str:

@@ -1,6 +1,6 @@
-"""Deepagents drivers for the three clean-room generators (Stage 2 of the migration).
+"""Deepagents drivers for the clean-room generators.
 
-Code, Test and Proof each derive their artifact from the planner's contract ALONE. This
+Code, Test, Proof and the Frontend each derive their artifact from the planner's contract ALONE. This
 module is where the paper's central claim is implemented, so read the isolation note before
 changing anything here.
 
@@ -8,9 +8,16 @@ changing anything here.
 Each generator is a SEPARATE top-level ``create_deep_agent`` invocation with its own
 ``StateBackend``, seeded with exactly one pool:
 
-    deep_generate_code   seeds /spec (contracts) + /code   — never /tests, never /proof
-    deep_generate_tests  seeds /spec (contracts) + /tests  — never /code,  never /proof
-    deep_generate_dafny  seeds /spec (contracts) + /proof  — never /code,  never /tests
+    deep_generate_code     seeds /spec (contracts) + /code   — never /tests, never /proof
+    deep_generate_tests    seeds /spec (contracts) + /tests  — never /code,  never /proof
+    deep_generate_dafny    seeds /spec (contracts) + /proof  — never /code,  never /tests
+    deep_generate_frontend seeds /spec (contracts) + /ui     — never /code,  never /tests
+
+The frontend is an UNSCORED deliverable — no oracle tests a UI, so it is not part of pass@k
+or the verification ratio. It is still held to the same isolation rule: it calls the backend
+over HTTP, and the routes it needs are derived from the contract's ``file_path`` by the same
+``route_for`` the packager and the cert oracle use, so it never needs to read the generated
+code to know where to POST.
 
 ``/spec`` is the ONE shared input: the planner's contract is deliberately common read-only
 ground, which is what makes three independent derivations target the same interface. Nothing
@@ -47,6 +54,7 @@ cannot be trusted. A requested artifact that never gets submitted raises
 from __future__ import annotations
 
 import json
+import re
 from typing import Annotated
 
 from langchain_core.tools import tool
@@ -58,6 +66,7 @@ from src.cleanroom.agents.deep.runtime import (
     PROOF_ROOT,
     SPEC_ROOT,
     TEST_ROOT,
+    UI_ROOT,
     agent_step_count,
     build_agent,
     deep_max_steps,
@@ -68,7 +77,7 @@ from src.cleanroom.agents.deep.runtime import (
     virtual_path,
 )
 from src.cleanroom.agents.test.schema.tests import FeatureTests, TestCase
-from src.cleanroom.utils.contracts import prereq_ifaces, requirement_text
+from src.cleanroom.utils.contracts import prereq_ifaces, requirement_text, route_for
 
 
 class DeepGenerationIncomplete(RuntimeError):
@@ -739,6 +748,129 @@ def deep_generate_dafny(
         "driver": "deepagent", "frs_requested": len(contracts),
         "has_source": bool(source.strip()), "verify_calls": len(verifications),
         "verified": bool(verifications and verifications[-1]),
+        "agent_steps": agent_step_count(state), "max_steps": steps,
+        "temperature": temperature,
+    }
+
+
+# --------------------------------------------------------------------------------------
+# Frontend Agent — sees contracts. Never code, never tests.
+# --------------------------------------------------------------------------------------
+
+FRONTEND_PROMPT = """\
+You are the frontend agent in a CLEAN-ROOM pipeline. You write the browser UI for ONE feature
+of a web app whose backend is being implemented independently from the same contracts.
+
+Your filesystem:
+* {spec_root}/ — one read-only contract sheet per FR. READ THESE FIRST.
+* {ui_root}/ — where your page goes.
+{skills_block}
+
+You will NEVER be given the backend implementation. It does not exist in your filesystem — do
+not look for it. You do not need it: every endpoint you must call is listed for you below,
+derived from the same contract you are reading.
+
+What to build — ONE self-contained HTML page for this feature:
+* Plain HTML, CSS and vanilla JavaScript in a SINGLE file. No build step, no framework, no CDN
+  or external URL of any kind — the app must run on a machine with no network.
+* One clearly labelled section per functional requirement, in the order given.
+* For each FR, a form whose inputs are that FR's parameters, prefilled with its example inputs
+  so the page is usable immediately, and a button that POSTs to its endpoint.
+* Send `fetch(endpoint, {{method:'POST', headers:{{'Content-Type':'application/json'}},
+  body: JSON.stringify(payload)}})`. The payload is a JSON object keyed by parameter name —
+  exactly the shape of the example inputs.
+* Render the JSON reply into the page. On a non-2xx status show the error `detail` from the
+  body; do not fail silently and never use `alert()`.
+* Use RELATIVE endpoint paths (`/controllers/foo`) so the page works from the app's own origin.
+
+Make it genuinely usable, not a debug harness: sensible labels drawn from the requirement text,
+grouped controls, visible success and error states, and enough CSS that it reads as a real
+screen. Do not invent behaviour the contracts do not describe, and do not add navigation to
+features that are not yours.
+
+Submit with `submit_page(html=...)` giving the COMPLETE file. That tool call is the ONLY way to
+deliver it — a file left in {ui_root}/ is NOT collected. Resubmitting replaces the earlier page.
+Start with `write_todos` listing the FRs, then read every contract sheet.
+
+You have about {max_steps} tool calls for this feature.
+"""
+
+
+def deep_generate_frontend(
+    ir: dict,
+    feature_id: str,
+    feature_name: str,
+    contracts: list[dict],
+    *,
+    temperature: float = 0.0,
+    model: str | None = None,
+    max_steps: int | None = None,
+) -> tuple[str, dict]:
+    """One self-contained HTML page for a feature's FRs. Returns ``(html, metrics)``.
+
+    UNSCORED: nothing certifies a UI, so an empty result degrades the deliverable and never
+    fails the run — unlike code and tests, which raise. Isolation still holds: the agent is
+    seeded with contract sheets and its own /ui pool, and the endpoints it needs are computed
+    here from each contract's ``file_path`` rather than read out of the generated app.
+    """
+    if not contracts:
+        return "", {"skipped": "no contracts"}
+
+    req_text = _requirement_index(ir)
+    seeds = _seed_specs(contracts, req_text, _all_contracts(ir))
+    skills: dict[str, str] = {}
+    page_path = virtual_path(UI_ROOT, 0, f"{str(feature_id).replace('.', '_')}.html")
+    # No CODE_ROOT and no TEST_ROOT entry. See the module docstring.
+
+    submitted: dict[str, str] = {}
+
+    @tool
+    def submit_page(
+        html: Annotated[str, "The COMPLETE self-contained HTML page for this feature."],
+    ) -> str:
+        """Record the finished UI page for this feature."""
+        if not (html or "").strip():
+            return "Rejected: html was empty."
+        lowered = html.lower()
+        if "<form" not in lowered and "fetch(" not in lowered:
+            return ("Rejected: the page neither renders a form nor calls fetch(), so it cannot "
+                    "exercise the feature. Add the per-FR forms and resubmit.")
+        # A CDN or any absolute external URL breaks an app running without network access.
+        external = re.findall(r"""(?:src|href)\s*=\s*["'](https?://[^"']+)""", html, re.I)
+        if external:
+            return (f"Rejected: the page loads {len(external)} external URL(s) "
+                    f"(e.g. {external[0]}). The app must run with no network — inline "
+                    f"everything and resubmit.")
+        replaced = bool(submitted)
+        submitted["html"] = html
+        return (f"{'Replaced' if replaced else 'Recorded'} the page "
+                f"({len(html.splitlines())} lines). You are done.")
+
+    steps = max_steps or (deep_max_steps() + 10 * len(contracts))
+    agent = build_agent(
+        [submit_page],
+        FRONTEND_PROMPT.format(spec_root=SPEC_ROOT, ui_root=UI_ROOT,
+                               skills_block=_skills_block(skills), max_steps=steps),
+        temperature=temperature, model=model, name="frontend")
+
+    # The endpoint is derived from file_path by the SAME route_for the packager and the cert
+    # oracle use, so the page cannot drift from where the router is actually mounted — and the
+    # agent never has to read the generated app to find out.
+    listing = "\n".join(
+        f"- FR {c['fr_id']}: {c.get('signature', '')}\n"
+        f"    endpoint: POST {route_for(c.get('file_path', ''))}\n"
+        f"    example body: {c.get('example_inputs_json', '{}')}"
+        for c in contracts)
+    opening = (f"Build the UI for feature {feature_id} — {feature_name} — covering these "
+               f"{len(contracts)} functional requirement(s):\n{listing}\n\n"
+               f"Their contract sheets are in {SPEC_ROOT}/. Write the page to {page_path}.")
+
+    state = invoke_agent(agent, opening, seed_files(seeds), max_steps=steps)
+
+    html = submitted.get("html", "")
+    return html, {
+        "driver": "deepagent", "frs_requested": len(contracts),
+        "has_page": bool(html.strip()), "lines": len(html.splitlines()),
         "agent_steps": agent_step_count(state), "max_steps": steps,
         "temperature": temperature,
     }

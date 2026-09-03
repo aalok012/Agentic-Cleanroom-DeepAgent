@@ -495,6 +495,24 @@ def run(srs_path: Path, output_dir: Path, cfg: RunConfig) -> tuple[dict, dict]:
             metrics["code"]["language"] = "Java"   # code_stats labels by Python AST; override
         elif language == "javascript":
             metrics["code"]["language"] = "JavaScript"   # code_stats labels by Python AST; override
+        # --- Stage 4b: Frontend (LLM, optional) ------------------------------
+        # Runs before packaging so build_runnable_package can lay the pages into app/static.
+        # UNSCORED: the UI is a deliverable, so a feature whose page fails to generate is
+        # reported and skipped — it never fails the run or moves a metric.
+        if cfg.frontend and stack == "fastapi":
+            _banner("[4b]", "Frontend Agent — browser UI from the same contracts")
+            from src.cleanroom.agents.frontend.agent import FrontendAgent
+
+            pages = _timed("frontend", stages,
+                           lambda: FrontendAgent(stack=stack).generate(ir))
+            ir["generated_frontend"] = {"pages": pages}
+            metrics["frontend"] = {"features_with_ui": len(pages),
+                                   "total_lines": sum(len(p.splitlines()) for p in pages.values())}
+            print(f"  {len(pages)} feature page(s), "
+                  f"{metrics['frontend']['total_lines']} lines of HTML")
+        elif cfg.frontend:
+            print(f"  [frontend] skipped — no UI target for stack {stack!r} (fastapi only).")
+
         if stack == "fastapi":
             app_dir = build_runnable_package(ir["generated_code"], code_dir, ir=ir)
             metrics["code"]["runnable_app"] = str(app_dir)
@@ -1106,6 +1124,13 @@ def main() -> None:
                              "'deterministic' (default) = the fixed-round loops that produced the "
                              "recorded results; 'deepagent' = a LangChain deepagents agent plans and "
                              "re-checks on its own (needs the `deepagents` package).")
+    parser.add_argument("--frontend", action="store_true",
+                        help="Generate a browser UI: one self-contained HTML page per feature, "
+                             "written by an agent from the SAME planner contracts the code, "
+                             "test and proof agents get, and wired to the real endpoints. "
+                             "FastAPI stack only. The UI is an unscored deliverable — nothing "
+                             "certifies a screen, so it never affects pass@k or the "
+                             "verification ratio.")
     parser.add_argument("--certify", action=argparse.BooleanOptionalAction, default=False,
                         help="Run the pass@k certification stage (--no-certify to skip; default off).")
     parser.add_argument("--samples", type=int, default=1,

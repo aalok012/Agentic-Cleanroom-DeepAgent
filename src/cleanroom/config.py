@@ -55,6 +55,7 @@ class RunConfig:
     #     have no switch — they are the irreducible spec->code task given to every arm) ---
     run_dependency: bool = True       # Dependency agent (semantic FR graph). Off => empty graph.
     run_test: bool = True             # Test agent (black-box tests). Off => no test generation.
+    frontend: bool = False            # Frontend agent (browser UI). Unscored deliverable, fastapi only.
     run_recovery: bool = True         # Recovery loop after certification (off == max_cert_loops 0).
 
     # --- per-agent knobs ---
@@ -94,6 +95,7 @@ class RunConfig:
             "language": self.language, "stack": self.stack, "models": self.models_used(),
             "agents": self.agents_enabled(),
             "run_dependency": self.run_dependency, "run_test": self.run_test,
+            "frontend": self.frontend,
             "run_recovery": self.run_recovery,
             "certify": self.certify, "samples": self.samples, "k_values": list(self.k_values),
             "prove": self.prove, "prove_target": self.prove_target,
@@ -154,6 +156,7 @@ class RunConfig:
             cert_model=getattr(args, "cert_model", None) or base,
             run_dependency=run_dependency,   # baseline keeps the deterministic graph (regex deps)
             run_test=run_test,
+            frontend=getattr(args, "frontend", False),
             run_recovery=run_recovery,
             certify=getattr(args, "certify", False),
             samples=getattr(args, "samples", 1),
