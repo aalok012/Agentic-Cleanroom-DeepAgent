@@ -40,18 +40,28 @@ def _debug_once_enabled() -> bool:
     return os.getenv("CLEANROOM_LLM_DEBUG_ONCE", "").lower() in ("1", "true", "yes", "on")
 
 
-def _llm_timeout() -> float:
-    """Per-request HTTP timeout (seconds) for the LLM client. A bounded timeout turns a hung /
-    half-delivered response (the transient upstream `JSONDecodeError` we hit) into a clean
-    timeout the SDK can RETRY instead of crashing the whole run.
+def _llm_timeout() -> float | None:
+    """Per-request HTTP timeout for the LLM client, or None for no timeout (the default).
 
-    Default 120s — generous enough for the Dafny/proof stage's long reasoning responses while
-    still catching hangs. Lower it (e.g. 30) via CLEANROOM_LLM_TIMEOUT for snappier failure on
-    the lighter stages."""
+    There is no useful upper bound to set here. Measured on a self-hosted 27-32B reasoning
+    model, a single proof-stage call runs 18-75s uncontended, and much longer in thinking mode,
+    with the syntax reference and numbered source in the prompt, under --enforce-eager, or when
+    two pipelines share one GPU. The old 120s default cost four complete runs: every timeout
+    burned max_retries attempts and then killed the pipeline, discarding every stage already
+    paid for. A slow response is not a failure, and the walltime of the Slurm job is the real
+    bound on a run.
+
+    Set CLEANROOM_LLM_TIMEOUT to a number of seconds to reinstate one (useful for catching a
+    genuinely hung endpoint); 0 or empty means no timeout.
+    """
+    raw = (os.getenv("CLEANROOM_LLM_TIMEOUT", "") or "").strip()
+    if not raw:
+        return None
     try:
-        return max(5.0, float(os.getenv("CLEANROOM_LLM_TIMEOUT", "120")))
+        seconds = float(raw)
     except ValueError:
-        return 120.0
+        return None
+    return max(5.0, seconds) if seconds > 0 else None
 
 
 def _llm_max_retries() -> int:

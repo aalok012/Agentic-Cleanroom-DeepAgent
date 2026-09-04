@@ -141,3 +141,23 @@ def test_targeted_hints_are_restored():
     assert "PRECONDITION" in _targeted_hint_from_text("precondition could not be proved")
     assert "POSTCONDITION" in _targeted_hint_from_text("postcondition could not be proved")
     assert _targeted_hint_from_text("") == "", "no hint when nothing matches"
+
+
+def test_the_llm_client_has_no_timeout_by_default(monkeypatch):
+    """A 120s default timeout killed four complete runs.
+
+    Every timeout burned max_retries attempts and then failed the pipeline, discarding every
+    stage already paid for -- an hour of spec/dependency/planning thrown away because one
+    proof-stage call took longer than two minutes. A slow response is not a failure here; the
+    Slurm job's walltime is the real bound.
+    """
+    from src.cleanroom.utils import llm_client
+
+    monkeypatch.delenv("CLEANROOM_LLM_TIMEOUT", raising=False)
+    assert llm_client._llm_timeout() is None, "no timeout unless one is explicitly configured"
+
+    monkeypatch.setenv("CLEANROOM_LLM_TIMEOUT", "300")
+    assert llm_client._llm_timeout() == 300.0, "an explicit timeout must still be honoured"
+
+    monkeypatch.setenv("CLEANROOM_LLM_TIMEOUT", "0")
+    assert llm_client._llm_timeout() is None, "0 means no timeout"
