@@ -809,10 +809,17 @@ def deep_generate_dafny(
             try:
                 ok, output = verifier(src)
             except Exception as exc:            # a broken verifier must not lose the agent's work
+                # Say so. Swallowing this silently made a broken verifier look exactly like a
+                # model that refuses to iterate: every feature came back at one round with no
+                # hint that the loop had aborted on its first call.
+                print(f"  !! verifier raised on {module}: {type(exc).__name__}: {exc} "
+                      f"— proof loop stopping after {len(verifications)} round(s)")
                 submitted["source"] = src
                 break
             verifications.append(bool(ok))
             verdicts[src] = (bool(ok), output or "")
+        print(f"  [{module}] round {len(verifications)}: "
+              f"{'VERIFIED' if ok else 'failed — ' + (output or '').strip().splitlines()[0][:70] if output else 'failed'}")
         if ok:
             break
         submitted["source"] = ""      # force a genuine resubmission, not silent reuse
