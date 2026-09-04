@@ -695,6 +695,65 @@ def _numbered(source: str, limit: int = 400) -> str:
     return "\n".join(f"{i:>{width}} | {ln}" for i, ln in enumerate(lines, start=1))
 
 
+def dafny_skeleton(module: str, contracts: list[dict]) -> str:
+    """A Dafny module that ALREADY VERIFIES, with the domain-specific parts marked FILL.
+
+    Measured over 39 generated modules: every single failure was in the SCAFFOLDING, never in
+    the logic -- `type Model = {a: bool}` (TypeScript), `requires not m.x` (Python), `m with
+    [k := v]` (Elm/F#), `_ => false` (Rust), `| Ctor(..) =>` where Dafny wants `case`. The
+    model consistently gets the SHAPE right and the DIALECT wrong, and Dafny's parser cannot
+    name any of those mistakes, so rounds get spent on syntax and never reach a proof.
+
+    Seeding a skeleton that verifies as-is removes that whole error class: the agent fills
+    holes instead of inventing structure. This mirrors lemmafit, where the agent edits a
+    Domain.dfy that already exists rather than emitting a module from nothing.
+    """
+    arms = "\n".join(
+        f"    case {_ctor(c)}(v) => m.(note := v)      // FILL: apply FR {c.get('fr_id', '?')}"
+        for c in contracts) or "    case Noop(v) => m"
+    ctors = "\n  | ".join(f"{_ctor(c)}(v: string)" for c in contracts) or "Noop(v: string)"
+    return f'''include "Replay.dfy"
+
+// Skeleton for {module}. It VERIFIES as written -- run dafny_verify to confirm before you
+// change anything. Replace the FILL comments; keep the structure.
+module {module}Domain refines Domain {{
+  // FILL: one field per piece of state this feature owns.
+  datatype Model = Model(note: string)
+
+  // FILL: one constructor per functional requirement, with its real parameters.
+  datatype Action =
+    {ctors}
+
+  // FILL: what must always hold. `true` verifies but proves nothing.
+  ghost predicate Inv(m: Model) {{ true }}
+
+  function Init(): Model {{ Model("") }}
+
+  function Apply(m: Model, a: Action): Model {{
+    match a
+{arms}
+  }}
+
+  function Normalize(m: Model): Model {{ m }}
+
+  // These carry NO requires/ensures: both are inherited from Domain and repeating them is an
+  // error ("a refining method is not allowed to add preconditions").
+  lemma InitSatisfiesInv() {{}}
+  lemma StepPreservesInv(m: Model, a: Action) {{}}
+}}
+
+module {module}Kernel refines Kernel {{
+  import D = {module}Domain
+}}
+'''
+
+
+def _ctor(contract: dict) -> str:
+    """A Dafny constructor name from an FR id: 3.1.REQ-1 -> Fr3_1_REQ_1."""
+    raw = str(contract.get("fr_id", "Act"))
+    return "Fr" + re.sub(r"[^0-9A-Za-z]", "_", raw)
+
+
 def _verify_failed_nudge(module: str, output: str, source: str = "") -> str:
     """Hand Dafny's own diagnostics back to the agent as the next turn."""
     listing = (f"This is exactly what you submitted, numbered so the line:col above resolves:\n\n"
@@ -750,6 +809,7 @@ def deep_generate_dafny(
     # <mod>Domain — so a name invented here would disagree with every one of them.
     module = module or f"Feature_{str(feature_id).replace('.', '_')}"
     draft_path = virtual_path(PROOF_ROOT, 0, f"{module}.dfy")   # a drafting path, not an output
+    seeds[draft_path] = dafny_skeleton(module, contracts)       # starts VERIFYING, agent fills it in
     # Not pre-seeded — see the note in deep_generate_code.
     # No CODE_ROOT and no TEST_ROOT entry. See the module docstring.
 
@@ -812,8 +872,13 @@ def deep_generate_dafny(
     listing = "\n".join(f"- FR {c['fr_id']}: {c.get('signature', '')}" for c in contracts)
     opening = (f"Specify and prove feature {feature_id} in Dafny module `{module}`, covering "
                f"these {len(contracts)} functional requirement(s):\n{listing}\n\n"
-               f"Their contract sheets are in {SPEC_ROOT}/. Draft at {draft_path} if it helps, "
-               f"but deliver the module with submit_dafny.")
+               f"Their contract sheets are in {SPEC_ROOT}/.\n\n"
+               f"A VERIFYING skeleton for this module is already at {draft_path}. Read it "
+               f"first and build on it: it has the correct structure, the correct refinement "
+               f"contract, and it passes `dafny_verify` as written. Fill in the FILL comments "
+               f"and keep the shape. Do not rewrite it from scratch — every module this "
+               f"pipeline has lost was lost to scaffolding syntax, not to the logic.\n\n"
+               f"Deliver the finished module with submit_dafny.")
 
     state = invoke_agent(agent, opening, seed_files(seeds), max_steps=steps)
 

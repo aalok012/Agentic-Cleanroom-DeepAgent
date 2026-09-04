@@ -117,6 +117,24 @@ class DafnyAgent:
         target = self.dafny_dir / f"{mod}.dfy"
         return self._generate_feature_deep(ir, feature_id, mod, target)
 
+    @staticmethod
+    def make_verifier(target: Path):
+        """The callable the proof loop uses: write a draft, run Dafny, return (ok, text).
+
+        Extracted so a test can drive the REAL verifier. The bug this exists to prevent was
+        `"\n".join(res.messages)`, which raises TypeError because messages is a list of dicts.
+        It raised only on FAILING verifications -- a passing one returns an empty list and joins
+        fine -- so it was invisible on success and fatal on every failure, and the dafny_verify
+        tool's own except-handler turned it into "the verifier could not be run ... continue
+        without it". No proof agent saw a single Dafny error across 37 features.
+        """
+        def verifier(source: str) -> tuple[bool, str]:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(source)
+            res = verify_dafny(target)
+            return res.ok, diagnostics(res)
+        return verifier
+
     def _generate_feature_deep(self, ir: dict, feature_id: str, mod: str, target: Path) -> FeatureDafny:
         """Generate and verify one feature's Dafny module with the proof agent.
 
@@ -130,16 +148,7 @@ class DafnyAgent:
         contracts = [c for c in ((ir.get("planning") or {}).get("contracts") or [])
                      if str(c.get("feature_id")) == str(feature_id)]
 
-        def verifier(source: str) -> tuple[bool, str]:
-            """Write a draft and run the real Dafny verifier over it."""
-            target.write_text(source)
-            res = verify_dafny(target)
-            # diagnostics(), NOT "\n".join: res.messages is a list of dicts, so joining it
-            # raises TypeError on every FAILING verification (a passing one returns an empty
-            # list and joins fine). That exception was caught by the dafny_verify tool, which
-            # then told the model "the verifier could not be run ... continue without it" — so
-            # no proof agent ever saw a single Dafny error, and every feature scored unproved.
-            return res.ok, diagnostics(res)
+        verifier = self.make_verifier(target)
 
         # Pass OUR module name and the abstract kernel the module must refine. Both used to
         # reach the model through the deterministic prompt this class no longer has; without
