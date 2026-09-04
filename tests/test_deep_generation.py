@@ -481,8 +481,11 @@ def test_every_prompt_renders_for_every_stack():
         TEST_PROMPT.format(language="Python", spec_root="/spec", test_root="/tests",
                            skills_block="", max_steps=90,
                            stack_block=test_stack_block(stack))
+    from src.cleanroom.agents.deep.generation import DAFNY_REF
+
     PROOF_PROMPT.format(spec_root="/spec", proof_root="/proof", verify_note="",
-                        skills_block="", max_steps=90, module="F1_1", domain="abstract module D")
+                        skills_block="", max_steps=90, module="F1_1", domain="abstract module D",
+                        dafny_ref=DAFNY_REF)
     from src.cleanroom.agents.deep.planning import stack_block
 
     for stack in ("python", "fastapi", "java", "spring"):

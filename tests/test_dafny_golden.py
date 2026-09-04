@@ -111,3 +111,33 @@ def test_the_seeded_skeleton_verifies_as_written(tmp_path, n_contracts):
 
     res = verify_dafny(target)
     assert res.ok, f"the seeded skeleton must verify; dafny said:\n{res.raw}"
+
+
+def test_the_syntax_reference_lost_in_the_migration_is_back():
+    """ea40d29 dropped DAFNY_REF when the proof track moved onto the deep agent.
+
+    The two lemmafit skill docs it was replaced with cover proof STRATEGY, not Dafny SYNTAX,
+    and every failure measured since is an item in this reference. Pin the entries that map to
+    an observed failure so they cannot be dropped again.
+    """
+    from src.cleanroom.agents.deep.generation import DAFNY_REF, PROOF_PROMPT
+
+    for needle, seen_as in [
+        ("datatype", "type Model = {a: bool} / named tuples"),
+        ("m[k := v]", "m with [k := v]  (Elm/F# record update)"),
+        ("map[]", "map<string,string>{}"),
+        ("match", "| Ctor(..) =>  instead of  case Ctor(..) =>"),
+    ]:
+        assert needle in DAFNY_REF, f"DAFNY_REF must cover {seen_as!r}"
+
+    assert "{dafny_ref}" in PROOF_PROMPT, "the reference must reach the agent's system prompt"
+
+
+def test_targeted_hints_are_restored():
+    """The other half of what ea40d29 dropped: error text -> a concrete fix tactic."""
+    from src.cleanroom.agents.deep.generation import _targeted_hint_from_text
+
+    assert "SYNTAX" in _targeted_hint_from_text("Error: rbrace expected")
+    assert "PRECONDITION" in _targeted_hint_from_text("precondition could not be proved")
+    assert "POSTCONDITION" in _targeted_hint_from_text("postcondition could not be proved")
+    assert _targeted_hint_from_text("") == "", "no hint when nothing matches"

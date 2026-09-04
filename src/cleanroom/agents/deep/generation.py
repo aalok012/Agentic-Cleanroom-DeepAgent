@@ -653,6 +653,8 @@ Rules:
 * Prove what you specify. A method whose `ensures` is trivially true is worth nothing.
 * `/skills/dafny-patterns.md` has a complete worked example of this exact structure. Read it
   before writing — the shape is easy to get subtly wrong and the verifier is unforgiving.
+
+{dafny_ref}
 {verify_note}
 Submit with `submit_dafny(module=..., source=...)` giving the COMPLETE module source. This
 tool call is the ONLY way to deliver the module: a draft left in {proof_root}/ is NOT collected,
@@ -693,6 +695,70 @@ def _numbered(source: str, limit: int = 400) -> str:
     lines = (source or "").splitlines()[:limit]
     width = len(str(len(lines)))
     return "\n".join(f"{i:>{width}} | {ln}" for i, ln in enumerate(lines, start=1))
+
+
+# ---------------------------------------------------------------------------------------------
+# Restored from the pre-deepagents DafnyAgent (dropped by ea40d29 "deepagents: planning,
+# generation, skills"). That migration moved the proof track onto an agent seeded with the two
+# lemmafit skill docs, and those cover proof STRATEGY, not Dafny SYNTAX -- so the syntax
+# cheat-sheet and the error-to-tactic hints went with it. Every failure measured since is in
+# this reference: named tuples instead of datatypes, `m with [k := v]` instead of `m[k := v]`,
+# `map<..>{}` instead of `map[]`, match arms written with `|`.
+#
+# The baselines are the evidence it mattered: 119 of 139 pre-migration runs verified at least
+# one feature, against 0 of 39 modules since.
+# ---------------------------------------------------------------------------------------------
+
+DAFNY_REF = """=== DAFNY SYNTAX REFERENCE (use these EXACT forms; wrong forms cause "gets expected"/"closeparen expected") ===
+- Record type: use a datatype, NOT a named tuple:  datatype Item = Item(name: string, price: int)
+- Map type:        map<string, int>
+- Map update:      m[k := v]                  // add or overwrite one entry
+- Map removal:     m - {k}                    // remove a key (the RHS is a SET literal)
+- Map membership:  k in m   /   k !in m
+- Map lookup:      m[k]      (only valid when k in m)
+- Map comprehension (filter/transform): map k | k in m && <predicate> :: m[k]
+  e.g. keep non-empty entries:  map k | k in m && k != "" && m[k] != "" :: m[k]
+- Sequence: s + [x] (append), s[1..] (tail), |s| (length), s[i] (index)
+- match: each case on its own line; NO `requires` inside Apply.
+- Quantifiers & comprehensions use `|` for the RANGE and `::` for the BODY/term — NEVER `::` twice:
+    forall x | P(x) :: Q(x)        (WRONG: `forall x :: P :: Q`)
+    exists x | P(x) :: Q(x)
+    set x | x in S :: f(x)         (every bound var MUST appear in the range; MUST end with a term)
+    map k | k in m :: f(k)
+  Flatten nested sets with MULTIPLE bound vars: set o, d | o in orders && d in orders[o] :: d
+- Functions are PURE: NO reassignment. `var x := e; <expr>` is a one-shot let-binding — you may
+  NOT then write `x := e2;`. Use fresh names / nested `var` lets instead.
+- Every `if ... then ...` in a function MUST have an `else` (functions are total).
+- Empty literals: empty map is `map[]`, empty set is `{}`, empty seq is `[]` — NEVER `set {}` or `map []`."""
+
+
+def _targeted_hint(messages: list[dict]) -> str:
+    """Map the concrete Dafny errors to a specific fix tactic (not just 'try again')."""
+    blob = " ".join(m.get("message", "") for m in messages).lower()
+    hints: list[str] = []
+    if "postcondition could not be proved" in blob:
+        hints.append(
+            "A POSTCONDITION failed. If the function returns a map/set comprehension, bind it "
+            "(`var result := ...;`) and add `assert forall k | k in result :: <predicate>;` before "
+            "returning, so Z3 sees the property. Otherwise add the missing `assert`/helper lemma that "
+            "proves the `ensures` on this return path.")
+    if "precondition could not be proved" in blob:
+        hints.append(
+            "A PRECONDITION failed — almost always a map/seq lookup `m[k]`/`s[i]` without first "
+            "establishing `k in m` / `0 <= i < |s|`. Add that `assert` (or a guard) immediately before "
+            "the lookup.")
+    if "rbrace expected" in blob or "expected" in blob:
+        hints.append(
+            "A SYNTAX/parse error. Do NOT use `let ... in` inside `ensures`/`requires`; inline the "
+            "expression or define a `predicate`/`function` and call it. Each spec clause is ONE boolean "
+            "expression.")
+    return ("\n\nTARGETED FIX:\n- " + "\n- ".join(hints)) if hints else ""
+
+
+
+def _targeted_hint_from_text(output: str) -> str:
+    """_targeted_hint, adapted to take Dafny's raw text instead of the parsed message dicts."""
+    return _targeted_hint([{"message": output or ""}])
 
 
 def dafny_skeleton(module: str, contracts: list[dict]) -> str:
@@ -761,6 +827,7 @@ def _verify_failed_nudge(module: str, output: str, source: str = "") -> str:
     return (f"Your submitted module `{module}` does NOT verify. Dafny reports:\n\n"
             f"{(output or '').strip()[:4000]}\n\n"
             f"{listing}"
+            f"{_targeted_hint_from_text(output)}"
             f"The caret (^) points at the exact offending token — look at what is under it. "
             f"A parse error means the file is not valid Dafny at all, so fix the syntax first, "
             f"and note that Dafny's parser cannot name the real mistake: `rbrace expected` "
@@ -864,6 +931,7 @@ def deep_generate_dafny(
     agent = build_agent(
         tools,
         PROOF_PROMPT.format(spec_root=SPEC_ROOT, proof_root=PROOF_ROOT, module=module,
+                            dafny_ref=DAFNY_REF,
                             domain=domain or "(the kernel source was not available; follow "
                                              "/skills/dafny-patterns.md exactly)",
                             verify_note=verify_note, skills_block=_skills_block(skills),
