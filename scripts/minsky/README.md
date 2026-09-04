@@ -35,7 +35,7 @@ Configured in [`models.conf`](models.conf), selected with `MODEL_KEY`:
 | Key | Served model | Quantization | Weights | Tool calling |
 |---|---|---|---|---|
 | `qwen-coder` | `Qwen/Qwen2.5-Coder-32B-Instruct-AWQ` | 4-bit AWQ (official build) | ~19 GB | native (hermes parser) |
-| `qwen3` | `Qwen/Qwen3-32B-AWQ` | 4-bit AWQ (official build) | ~19 GB | native (hermes parser) |
+| `qwen3.8` | `Qwen/Qwen3.8-27B-FP8` | FP8 (official pre-quantized build) | ~27 GB | hermes parser, **unverified** for this release |
 | `r1-distill` | `deepseek-ai/DeepSeek-R1-Distill-Qwen-32B` | FP8 at load | ~32 GB | **none** |
 
 AWQ is preferred — smaller, faster to start. The R1 distill has no official 4-bit build,
@@ -47,11 +47,11 @@ have the disk quota before the first R1 run. If you vet a community AWQ quant, s
 `--kv-cache-dtype fp8` roughly doubles usable context in the VRAM left after weights,
 which matters most for the FP8 model (~13 GB spare vs ~27 GB for AWQ).
 
-### Qwen3-32B is a hybrid reasoning model
+### Qwen3.8-27B is a hybrid reasoning model
 
-It ships with thinking **on** by default, so it emits `<think>…</think>` before the answer —
+Qwen3.8-27B ships with thinking **on** by default, so it emits `<think>…</think>` before the answer —
 the same parsing hazard as the R1 distill, handled the same way with
-`--reasoning-parser qwen3`. Unlike the distill it **does** support tool calling, so structured
+`--reasoning-parser qwen3`. Its config reports `model_type: qwen3_5`, so the stock image's vLLM must be new enough to know that architecture — if a job aborts on an unknown architecture, that is why. Tool calling is expected to work through the hermes parser but is **not stated on the model card**, so structured
 output still goes through the native hermes path instead of the text-recovery fallback; it is
 the closest thing here to a like-for-like comparison against `qwen-coder`, differing in model
 generation rather than in serving contract.

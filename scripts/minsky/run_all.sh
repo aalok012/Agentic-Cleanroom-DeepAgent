@@ -98,7 +98,7 @@ uv run python run_pipeline.py "$SRS" \
 [ "$PIPE_RC" -eq 0 ] || echo "!! pipeline exited $PIPE_RC — collecting whatever it recorded"
 
 # Aggregate into the CSV. --append keeps rows from earlier runs (other SRS/model cells) and
-# only updates this cell, so the file survives across the qwen3 / qwen-coder / r1-distill arms.
+# only updates this cell, so the file survives across the qwen3.8 / qwen-coder / r1-distill arms.
 echo "── collecting metrics → $CSV"
 uv run python scripts/collect_metrics.py --root "$RESULTS_DIR/outputs" --out "$CSV" --append
 

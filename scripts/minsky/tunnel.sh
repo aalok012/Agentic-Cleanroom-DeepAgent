@@ -5,7 +5,7 @@
 #
 #   MINSKY_USER=your-netid ./scripts/minsky/tunnel.sh                # only job running
 #   MINSKY_USER=your-netid ./scripts/minsky/tunnel.sh qwen-coder     # pick by model key
-#   MINSKY_USER=your-netid ./scripts/minsky/tunnel.sh qwen3
+#   MINSKY_USER=your-netid ./scripts/minsky/tunnel.sh qwen3.8
 #
 # Holds the tunnel in the foreground; Ctrl-C closes it. Run the pipeline in a
 # second terminal while this stays up.
@@ -62,7 +62,7 @@ echo "   model $MODEL"
 # lines over a long generation), while 0.6 spent a whole 4000-token budget inside the
 # thinking block and returned EMPTY content. Raising it also randomises the generation
 # agents, which all ask for 0.0 deliberately — the same task then submits on one run and
-# stops after three turns on the next. Leave qwen3 at the deterministic default.
+# stops after three turns on the next. Leave the Qwen models at the deterministic default.
 TEMP=""; case "$KEY" in r1-distill) TEMP=0.6 ;; esac
 
 {

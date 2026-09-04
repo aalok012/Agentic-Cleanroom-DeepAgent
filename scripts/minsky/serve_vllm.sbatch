@@ -12,7 +12,7 @@
 # an OpenAI-compatible API, using the stock vllm-openai image.
 #
 #   sbatch --export=ALL,MODEL_KEY=qwen-coder scripts/minsky/serve_vllm.sbatch
-#   sbatch --export=ALL,MODEL_KEY=qwen3      scripts/minsky/serve_vllm.sbatch
+#   sbatch --export=ALL,MODEL_KEY=qwen3.8    scripts/minsky/serve_vllm.sbatch
 #   sbatch --export=ALL,MODEL_KEY=r1-distill scripts/minsky/serve_vllm.sbatch
 #
 # Minsky policy: 1 GPU per user → only ONE of these can run at a time, and the
@@ -47,7 +47,7 @@ REPO_DIR="${REPO_DIR:-$(find_conf)}" || {
 }
 . "$REPO_DIR/models.conf"
 
-MODEL_KEY="${MODEL_KEY:?set MODEL_KEY=qwen-coder|qwen3|r1-distill}"
+MODEL_KEY="${MODEL_KEY:?set MODEL_KEY=qwen-coder|qwen3.8|r1-distill}"
 model_config "$MODEL_KEY"
 
 VLLM_SIF="${VLLM_SIF:-/opt/apptainer/images/vllm-openai-latest.sif}"
