@@ -26,7 +26,7 @@ from pathlib import Path
 
 
 from src.cleanroom.agents.dafny.schema.dafny import FeatureDafny, GeneratedDafny
-from src.cleanroom.utils.dafny_verify import verify_dafny
+from src.cleanroom.utils.dafny_verify import format_messages, verify_dafny
 from src.cleanroom.utils.llm_client import DAFNY_MODEL, get_llm
 
 
@@ -134,7 +134,12 @@ class DafnyAgent:
             """Write a draft and run the real Dafny verifier over it."""
             target.write_text(source)
             res = verify_dafny(target)
-            return res.ok, "\n".join(res.messages or [])
+            # format_messages, NOT "\n".join: res.messages is a list of dicts, so joining it
+            # raises TypeError on every FAILING verification (a passing one returns an empty
+            # list and joins fine). That exception was caught by the dafny_verify tool, which
+            # then told the model "the verifier could not be run ... continue without it" — so
+            # no proof agent ever saw a single Dafny error, and every feature scored unproved.
+            return res.ok, format_messages(res.messages)
 
         # Pass OUR module name and the abstract kernel the module must refine. Both used to
         # reach the model through the deterministic prompt this class no longer has; without

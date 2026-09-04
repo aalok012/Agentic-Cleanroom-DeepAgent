@@ -79,3 +79,30 @@ def test_driver_forces_proof_revision_when_agent_never_verifies(fake_llm):
     assert metrics["verified"] is True, "the corrected module must be recorded as verified"
     assert "datatype Model" in out["source"]
     print("PASS: agent never verified; driver forced a revision and the module now verifies")
+
+
+def test_verifier_closure_survives_a_failing_verification(tmp_path, monkeypatch):
+    """The bug that made every feature score unproved.
+
+    DafnyAgent's verifier closure did `"\n".join(res.messages)`, but messages is a list of
+    dicts, so it raised TypeError on every FAILING verification -- while a PASSING one returns
+    an empty list and joins fine. The agent's dafny_verify tool caught the TypeError and told
+    the model "the verifier could not be run ... continue without it", so no proof agent ever
+    saw a Dafny error. 0/37 features verified.
+    """
+    from src.cleanroom.utils.dafny_verify import DafnyResult, format_messages
+
+    failing = DafnyResult(ok=False, verified=False, errors=1,
+                          messages=[{"line": 4, "col": 15, "message": "invalid SynonymTypeDecl"}])
+    passing = DafnyResult(ok=True, verified=True, errors=0, messages=[])
+
+    # The old expression, kept here so the regression is unambiguous.
+    import pytest
+    with pytest.raises(TypeError):
+        "\n".join(failing.messages)
+
+    text = format_messages(failing.messages)
+    assert "invalid SynonymTypeDecl" in text
+    assert "4:15" in text, "the agent needs the line and column to fix the error"
+    assert format_messages(passing.messages) == ""
+    print("PASS: a failing verification now renders as actionable text instead of raising")

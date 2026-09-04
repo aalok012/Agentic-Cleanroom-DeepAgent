@@ -25,6 +25,24 @@ _ERROR_LINE = re.compile(r"\((\d+),(\d+)\):\s*(?:Error|.*?error)\b[:]?\s*(.*)", 
 _AXIOM = re.compile(r"assume\s*\{:axiom\}")
 
 
+def format_messages(messages: list[dict]) -> str:
+    """Render DafnyResult.messages as text an agent can act on: ``line:col: message``.
+
+    ``messages`` is a list of DICTS. Joining it directly raises TypeError, and because a
+    PASSING verification returns an empty list, that mistake is invisible on success and fatal
+    on every failure — which is exactly how it stayed hidden.
+    """
+    out = []
+    for m in messages or []:
+        if isinstance(m, dict):
+            line, col = m.get("line", 0), m.get("col", 0)
+            text = str(m.get("message", "")).strip()
+            out.append(f"{line}:{col}: {text}" if (line or col) else text)
+        else:
+            out.append(str(m))
+    return "\n".join(out)
+
+
 @dataclass
 class DafnyResult:
     ok: bool
