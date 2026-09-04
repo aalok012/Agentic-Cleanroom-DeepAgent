@@ -25,6 +25,28 @@ _ERROR_LINE = re.compile(r"\((\d+),(\d+)\):\s*(?:Error|.*?error)\b[:]?\s*(.*)", 
 _AXIOM = re.compile(r"assume\s*\{:axiom\}")
 
 
+def diagnostics(res: "DafnyResult", limit: int = 4000) -> str:
+    """The text to hand an agent after a failed verification.
+
+    Prefer Dafny's RAW output over the parsed messages. Dafny prints the offending source line
+    and a caret under the exact token:
+
+        F3_2.dfy(43,17): Error: rbrace expected
+           |
+        43 |     requires not m.user_authenticated
+           |                  ^
+
+    The caret is the diagnostic. Dafny's parser cannot know that `not` should be `!`, so the
+    message alone ("rbrace expected") localizes nothing, and an agent handed only "43:17:
+    rbrace expected" has to reconstruct the file from memory to guess what is at column 17 —
+    which is exactly how a proof agent gets stuck re-emitting the same error every round.
+    """
+    raw = (getattr(res, "raw", "") or "").strip()
+    if raw and raw != "timeout":
+        return raw[:limit]
+    return format_messages(getattr(res, "messages", []) or "")[:limit]
+
+
 def format_messages(messages: list[dict]) -> str:
     """Render DafnyResult.messages as text an agent can act on: ``line:col: message``.
 

@@ -146,6 +146,10 @@ Field access is `m.applicationActive` (with the dot). Copy-with-change is
 - `Model` with more than one field must be a `datatype`, never `type Model = (a: T, b: U)`
   (named tuple, invalid) or `type Model = { a: T }` (TypeScript, invalid).
 - The empty map literal is `map[]`. `map<string, string>{}` is a parse error ("invalid Ident").
+- Dafny's boolean operators are `!`, `&&`, `||` — **never** `not`, `and`, `or`. Writing
+  `requires not m.active` gives the useless error `rbrace expected` pointing at `m`, because
+  the parser reads `not` as an identifier and then cannot explain what went wrong. If you see
+  `rbrace expected` and the braces balance, look for a Python operator on that line.
 - It is OK to have `assume {:axiom} false` in _proofs_, temporarily, as the pieces are put together. Strive for zero such axioms eventually.
 - Nested pattern matching _is_ allowed, but needs to be properly parenthesized. Example (out of context):
 ```

@@ -106,3 +106,30 @@ def test_verifier_closure_survives_a_failing_verification(tmp_path, monkeypatch)
     assert "4:15" in text, "the agent needs the line and column to fix the error"
     assert format_messages(passing.messages) == ""
     print("PASS: a failing verification now renders as actionable text instead of raising")
+
+
+def test_diagnostics_keeps_dafnys_caret():
+    """The caret is the diagnostic; the parsed message alone localizes nothing.
+
+    Dafny cannot know that `not` should be `!`, so it reports "rbrace expected" at a column.
+    An agent given only "43:17: rbrace expected" has to reconstruct the file from memory to
+    guess what sits at column 17 -- observed re-emitting the identical error on rounds 5 and 6.
+    """
+    from src.cleanroom.utils.dafny_verify import DafnyResult, diagnostics
+
+    raw = ("F3_2.dfy(43,17): Error: rbrace expected\n"
+           "   |\n"
+           "43 |     requires not m.user_authenticated\n"
+           "   |                  ^\n")
+    res = DafnyResult(ok=False, verified=False, errors=1,
+                      messages=[{"line": 43, "col": 17, "message": "rbrace expected"}], raw=raw)
+
+    out = diagnostics(res)
+    assert "^" in out, "the caret must survive"
+    assert "requires not m.user_authenticated" in out, "the offending source line must survive"
+
+    # Falls back to the parsed messages when there is no raw output to show.
+    bare = DafnyResult(ok=False, verified=False, errors=1,
+                       messages=[{"line": 1, "col": 2, "message": "boom"}], raw="")
+    assert "boom" in diagnostics(bare)
+    print("PASS: the agent now sees the source line and caret, not just a column number")
