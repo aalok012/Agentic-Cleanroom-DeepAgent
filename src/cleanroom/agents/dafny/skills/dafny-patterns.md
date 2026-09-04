@@ -140,6 +140,38 @@ module EventDomain refines Domain {
 Field access is `m.applicationActive` (with the dot). Copy-with-change is
 `m.(applicationActive := false)`. Both need the `datatype` form above.
 
+## Dafny is not Python, and not TypeScript
+
+Every proof failure measured on this pipeline so far has been a SYNTAX error borrowed from
+another language — not a failed proof. Dafny's parser cannot name the real mistake, so it
+reports something misleading and points a caret at the token. Check this table first.
+
+| You may want to write | Dafny requires | What Dafny says if you get it wrong |
+|---|---|---|
+| `not x`, `x and y`, `x or y` | `!x`, `x && y`, `x \|\| y` | `rbrace expected`, caret on the next token |
+| `type Model = { a: bool }` | `datatype Model = Model(a: bool)` | `invalid SynonymTypeDecl` |
+| `type Model = (a: T, b: U)` | `datatype Model = Model(a: T, b: U)` | `closeparen expected` |
+| `\| Ctor(x) => e` as a match arm | `case Ctor(x) => e` | `rbrace expected` |
+| `if c: e1 else: e2` | `if c then e1 else e2` | `then expected` |
+| `ghost lemma L()` | `lemma L()` | `a lemma cannot be declared 'ghost'` |
+| `map<string, string>{}` | `map[]` | `invalid Ident` |
+| `m.field` on a tuple | `datatype` with named fields | `closeparen expected` |
+
+`|` separates CONSTRUCTORS in a datatype declaration; `case` introduces a MATCH ARM. They are
+not interchangeable:
+
+```dafny
+datatype Action = Inc | Dec              // `|` here
+function Apply(m: Model, a: Action): Model {
+  match a
+  case Inc => m + 1                      // `case` here
+  case Dec => m - 1
+}
+```
+
+If Dafny says `rbrace expected` and your braces balance, you have a Python or TypeScript
+operator on that line. Read the caret, not the message.
+
 ## Common Mistakes to Avoid
 
 - It is an error to repeat inherited `requires` clauses (see the refinement note above).

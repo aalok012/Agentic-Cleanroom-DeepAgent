@@ -670,10 +670,25 @@ _VERIFY_NOTE = ("* Call `dafny_verify(source=...)` to check a draft. Iterate unt
                 "or you run out of budget; report honestly if it does not.\n")
 
 
-def _verify_failed_nudge(module: str, output: str) -> str:
+def _numbered(source: str, limit: int = 400) -> str:
+    """The submitted source with line numbers, so a diagnostic's line:col is resolvable.
+
+    lemmafit's own workflow has the agent EDIT Domain.dfy as a file it can read, with a daemon
+    running `dafny verify` on every save. Ours submits a blob through a tool and never reads it
+    back, so "43:17" refers to a line the agent can only reconstruct from memory. Show it.
+    """
+    lines = (source or "").splitlines()[:limit]
+    width = len(str(len(lines)))
+    return "\n".join(f"{i:>{width}} | {ln}" for i, ln in enumerate(lines, start=1))
+
+
+def _verify_failed_nudge(module: str, output: str, source: str = "") -> str:
     """Hand Dafny's own diagnostics back to the agent as the next turn."""
+    listing = (f"This is exactly what you submitted, numbered so the line:col above resolves:\n\n"
+               f"{_numbered(source)}\n\n") if source.strip() else ""
     return (f"Your submitted module `{module}` does NOT verify. Dafny reports:\n\n"
             f"{(output or '').strip()[:4000]}\n\n"
+            f"{listing}"
             f"The caret (^) points at the exact offending token — look at what is under it. "
             f"A parse error means the file is not valid Dafny at all, so fix the syntax first, "
             f"and note that Dafny's parser cannot name the real mistake: `rbrace expected` "
@@ -827,7 +842,8 @@ def deep_generate_dafny(
         if ok:
             break
         submitted["source"] = ""      # force a genuine resubmission, not silent reuse
-        state = nudge_agent(agent, state, _verify_failed_nudge(module, output), max_steps=steps)
+        state = nudge_agent(agent, state, _verify_failed_nudge(module, output, src),
+                            max_steps=steps)
     source_after_loop = submitted.get("source", "") or src
     submitted["source"] = source_after_loop
 
