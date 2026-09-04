@@ -670,6 +670,19 @@ _VERIFY_NOTE = ("* Call `dafny_verify(source=...)` to check a draft. Iterate unt
                 "or you run out of budget; report honestly if it does not.\n")
 
 
+def _first_error(output: str) -> str:
+    """The first `line:col: message` in Dafny's output, for one-line round logging.
+
+    Dafny prefixes each diagnostic with the full path, so the raw first line is mostly the
+    absolute filename — useless in a progress log. Pull out the part that identifies the fault.
+    """
+    for line in (output or "").splitlines():
+        m = re.search(r"\((\d+),(\d+)\):\s*(?:Error|Warning):\s*(.+)", line)
+        if m:
+            return f"{m.group(1)}:{m.group(2)} {m.group(3).strip()}"[:90]
+    return (output or "").strip().splitlines()[0][:90] if (output or "").strip() else "(no output)"
+
+
 def _numbered(source: str, limit: int = 400) -> str:
     """The submitted source with line numbers, so a diagnostic's line:col is resolvable.
 
@@ -838,7 +851,7 @@ def deep_generate_dafny(
             verifications.append(bool(ok))
             verdicts[src] = (bool(ok), output or "")
         print(f"  [{module}] round {len(verifications)}: "
-              f"{'VERIFIED' if ok else 'failed — ' + (output or '').strip().splitlines()[0][:70] if output else 'failed'}")
+              f"{'VERIFIED' if ok else 'failed — ' + _first_error(output)}")
         if ok:
             break
         submitted["source"] = ""      # force a genuine resubmission, not silent reuse
